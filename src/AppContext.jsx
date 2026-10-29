@@ -12,6 +12,21 @@ const API_BASE = typeof window !== 'undefined' && window.location.port === '5173
   ? 'http://localhost:8000'
   : '';
 
+// Safe fetch helper that guarantees no "Unexpected end of JSON input" errors on static hosts like Vercel
+async function safeFetchJson(url, options = {}) {
+  try {
+    const res = await fetch(url, options);
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return { ok: false, isJson: false, status: res.status, data: null };
+    }
+    const data = await res.json();
+    return { ok: res.ok, isJson: true, status: res.status, data };
+  } catch (err) {
+    return { ok: false, isJson: false, status: 0, data: null, error: err };
+  }
+}
+
 export function AppProvider({ children }) {
   // Initialize states with local cached data or seed data so mobile / reload never blanks out
   const [students, setStudents] = useState(() => {
@@ -65,36 +80,32 @@ export function AppProvider({ children }) {
 
   const [firebaseStatus, setFirebaseStatus] = useState(null);
 
-  // Load system data from Python API on mount (with Supabase fallback)
+  // Load system data from Python API on mount (with Supabase/local fallback)
   const fetchSystemData = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/system/data`);
-      if (res.ok) {
-        const pyData = await res.json();
-        if (pyData.sections && pyData.sections.length > 0) {
-          setSections(pyData.sections);
-          localStorage.setItem('sa_cached_sections', JSON.stringify(pyData.sections));
-        }
-        if (pyData.subjects && pyData.subjects.length > 0) {
-          setSubjects(pyData.subjects);
-          localStorage.setItem('sa_cached_subjects', JSON.stringify(pyData.subjects));
-        }
-        if (pyData.teachers && pyData.teachers.length > 0) {
-          setTeachers(pyData.teachers);
-          localStorage.setItem('sa_cached_teachers', JSON.stringify(pyData.teachers));
-        }
-        if (pyData.students && pyData.students.length > 0) {
-          setStudents(pyData.students);
-          localStorage.setItem('sa_cached_students', JSON.stringify(pyData.students));
-        }
-        if (pyData.activeSessions) setActiveSessions(pyData.activeSessions);
-        if (pyData.ncRecords) setNcRecords(pyData.ncRecords);
-        if (pyData.attendanceRecords) setAttendanceRecords(pyData.attendanceRecords);
-        if (pyData.firebase) setFirebaseStatus(pyData.firebase);
-        return pyData;
+    const resp = await safeFetchJson(`${API_BASE}/api/system/data`);
+    if (resp.ok && resp.isJson && resp.data) {
+      const pyData = resp.data;
+      if (pyData.sections && pyData.sections.length > 0) {
+        setSections(pyData.sections);
+        localStorage.setItem('sa_cached_sections', JSON.stringify(pyData.sections));
       }
-    } catch (e) {
-      console.warn("Python backend fetch /api/system/data skipped, using local data/cache:", e);
+      if (pyData.subjects && pyData.subjects.length > 0) {
+        setSubjects(pyData.subjects);
+        localStorage.setItem('sa_cached_subjects', JSON.stringify(pyData.subjects));
+      }
+      if (pyData.teachers && pyData.teachers.length > 0) {
+        setTeachers(pyData.teachers);
+        localStorage.setItem('sa_cached_teachers', JSON.stringify(pyData.teachers));
+      }
+      if (pyData.students && pyData.students.length > 0) {
+        setStudents(pyData.students);
+        localStorage.setItem('sa_cached_students', JSON.stringify(pyData.students));
+      }
+      if (pyData.activeSessions) setActiveSessions(pyData.activeSessions);
+      if (pyData.ncRecords) setNcRecords(pyData.ncRecords);
+      if (pyData.attendanceRecords) setAttendanceRecords(pyData.attendanceRecords);
+      if (pyData.firebase) setFirebaseStatus(pyData.firebase);
+      return pyData;
     }
 
     // Supabase fallback only if online
@@ -176,7 +187,7 @@ export function AppProvider({ children }) {
         setNcRecords(mappedNc);
       }
     } catch (err) {
-      console.warn("Supabase load skipped:", err.message);
+      // Supabase unavailable, use local state
     }
   }, []);
 
@@ -252,7 +263,7 @@ export function AppProvider({ children }) {
 
         setAttendanceRecords(reconstructed);
       } catch (err) {
-        console.warn("Supabase record fetch skipped:", err.message);
+        // Ignored
       }
     };
 
@@ -267,22 +278,19 @@ export function AppProvider({ children }) {
     const pwd = (password || '').trim();
 
     // 1. Attempt backend database authentication first
-    try {
-      const res = await fetch(`${API_BASE}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role, email: searchEmail, password: pwd })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.user) {
-          setCurrentUser(data.user);
-          fetchSystemData();
-          return data.user;
-        }
-      }
-    } catch (apiErr) {
-      console.warn("Backend login fetch error, evaluating local state fallback:", apiErr);
+    const resp = await safeFetchJson(`${API_BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, email: searchEmail, password: pwd })
+    });
+
+    if (resp.ok && resp.isJson && resp.data?.success && resp.data?.user) {
+      setCurrentUser(resp.data.user);
+      fetchSystemData();
+      return resp.data.user;
+    }
+    if (!resp.ok && resp.isJson && resp.data?.detail) {
+      throw new Error(resp.data.detail);
     }
 
     // 2. Offline / local fallback if backend server is unreachable (or on Vercel)
@@ -331,22 +339,19 @@ export function AppProvider({ children }) {
   }, [students, teachers, subjects, attendanceRecords, fetchSystemData]);
 
   const register = useCallback(async (role, userData) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role, userData })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.user) {
-          setCurrentUser(data.user);
-          await fetchSystemData();
-          return data.user;
-        }
-      }
-    } catch (err) {
-      console.warn("Backend registration error, continuing with local registration:", err);
+    const resp = await safeFetchJson(`${API_BASE}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, userData })
+    });
+
+    if (resp.ok && resp.isJson && resp.data?.success && resp.data?.user) {
+      setCurrentUser(resp.data.user);
+      await fetchSystemData();
+      return resp.data.user;
+    }
+    if (!resp.ok && resp.isJson && resp.data?.detail) {
+      throw new Error(resp.data.detail);
     }
 
     // Client-side fallback for Vercel/offline
@@ -397,11 +402,7 @@ export function AppProvider({ children }) {
   }, [fetchSystemData, subjects]);
 
   const clearDatabase = useCallback(async () => {
-    try {
-      await fetch(`${API_BASE}/api/database/clear`, { method: 'POST' });
-    } catch (err) {
-      console.warn("Clear database API call skipped:", err);
-    }
+    safeFetchJson(`${API_BASE}/api/database/clear`, { method: 'POST' });
     localStorage.removeItem('sa_cached_students');
     localStorage.removeItem('sa_cached_teachers');
     setStudents(initialStudents);
@@ -420,7 +421,7 @@ export function AppProvider({ children }) {
       return updated;
     });
 
-    fetch(`${API_BASE}/api/teachers`, {
+    safeFetchJson(`${API_BASE}/api/teachers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -432,7 +433,7 @@ export function AppProvider({ children }) {
         assignedSections: teacher.assignedSections || [],
         password: teacher.password || 'pass'
       })
-    }).catch(e => console.warn("Backend addTeacher notice:", e));
+    });
   }, []);
 
   const deleteTeacher = useCallback((id) => {
@@ -441,7 +442,7 @@ export function AppProvider({ children }) {
       localStorage.setItem('sa_cached_teachers', JSON.stringify(updated));
       return updated;
     });
-    fetch(`${API_BASE}/api/teachers/${id}`, { method: 'DELETE' }).catch(e => console.warn("deleteTeacher notice:", e));
+    safeFetchJson(`${API_BASE}/api/teachers/${id}`, { method: 'DELETE' });
   }, []);
 
   const updateTeacherAssignments = useCallback((teacherId, assignedSubjects, assignedSections) => {
@@ -450,11 +451,11 @@ export function AppProvider({ children }) {
       localStorage.setItem('sa_cached_teachers', JSON.stringify(updated));
       return updated;
     });
-    fetch(`${API_BASE}/api/teachers/${teacherId}/assignments`, {
+    safeFetchJson(`${API_BASE}/api/teachers/${teacherId}/assignments`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assignedSubjects, assignedSections })
-    }).catch(e => console.warn("update assignments notice:", e));
+    });
   }, []);
 
   // ─── Admin: Manage Students ───
@@ -485,7 +486,7 @@ export function AppProvider({ children }) {
       [newId]: generateSubjectAttendance(newId, uniqueSubjectIds),
     }));
 
-    fetch(`${API_BASE}/api/students`, {
+    safeFetchJson(`${API_BASE}/api/students`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -498,7 +499,7 @@ export function AppProvider({ children }) {
         parentName: student.parentName || '',
         parentPhone: student.parentPhone || ''
       })
-    }).catch(e => console.warn("addStudent notice:", e));
+    });
   }, [teachers, subjects]);
 
   const updateStudent = useCallback((studentId, updatedData) => {
@@ -508,7 +509,7 @@ export function AppProvider({ children }) {
       return updated;
     });
 
-    fetch(`${API_BASE}/api/students/${studentId}`, {
+    safeFetchJson(`${API_BASE}/api/students/${studentId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -521,7 +522,7 @@ export function AppProvider({ children }) {
         parentName: updatedData.parentName || '',
         parentPhone: updatedData.parentPhone || ''
       })
-    }).catch(e => console.warn("updateStudent notice:", e));
+    });
   }, []);
 
   const deleteStudent = useCallback((id) => {
@@ -536,33 +537,28 @@ export function AppProvider({ children }) {
       return next;
     });
 
-    fetch(`${API_BASE}/api/students/${id}`, { method: 'DELETE' }).catch(e => console.warn("deleteStudent notice:", e));
+    safeFetchJson(`${API_BASE}/api/students/${id}`, { method: 'DELETE' });
   }, []);
 
   // ─── Face Biometrics Management ───
   const enrollStudentFace = useCallback(async (studentId, imageData) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/students/${studentId}/enroll-face`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageData })
+    const resp = await safeFetchJson(`${API_BASE}/api/students/${studentId}/enroll-face`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageData })
+    });
+    if (resp.ok && resp.isJson && resp.data) {
+      setStudents(prev => {
+        const updated = prev.map(s => s.id === studentId ? {
+          ...s,
+          faceRegistered: true,
+          faceImage: resp.data.thumbnail || imageData,
+          faceEnrolledAt: resp.data.enrolledAt
+        } : s);
+        localStorage.setItem('sa_cached_students', JSON.stringify(updated));
+        return updated;
       });
-      if (res.ok) {
-        const data = await res.json();
-        setStudents(prev => {
-          const updated = prev.map(s => s.id === studentId ? {
-            ...s,
-            faceRegistered: true,
-            faceImage: data.thumbnail || imageData,
-            faceEnrolledAt: data.enrolledAt
-          } : s);
-          localStorage.setItem('sa_cached_students', JSON.stringify(updated));
-          return updated;
-        });
-        return data;
-      }
-    } catch (e) {
-      console.warn("Backend face enroll skipped, performing client-side update:", e);
+      return resp.data;
     }
 
     // Client-side fallback for Vercel / offline mode
@@ -586,27 +582,22 @@ export function AppProvider({ children }) {
   }, []);
 
   const removeStudentFace = useCallback(async (studentId) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/students/${studentId}/remove-face`, {
-        method: 'DELETE'
+    const resp = await safeFetchJson(`${API_BASE}/api/students/${studentId}/remove-face`, {
+      method: 'DELETE'
+    });
+    if (resp.ok && resp.isJson) {
+      setStudents(prev => {
+        const updated = prev.map(s => s.id === studentId ? {
+          ...s,
+          faceRegistered: false,
+          faceDescriptor: [],
+          faceImage: '',
+          faceEnrolledAt: ''
+        } : s);
+        localStorage.setItem('sa_cached_students', JSON.stringify(updated));
+        return updated;
       });
-      if (res.ok) {
-        const data = await res.json();
-        setStudents(prev => {
-          const updated = prev.map(s => s.id === studentId ? {
-            ...s,
-            faceRegistered: false,
-            faceDescriptor: [],
-            faceImage: '',
-            faceEnrolledAt: ''
-          } : s);
-          localStorage.setItem('sa_cached_students', JSON.stringify(updated));
-          return updated;
-        });
-        return data;
-      }
-    } catch (e) {
-      console.warn("Backend remove face skipped, performing client-side update:", e);
+      return resp.data;
     }
 
     setStudents(prev => {
@@ -625,32 +616,32 @@ export function AppProvider({ children }) {
   }, []);
 
   const verifyFaceLogin = useCallback(async (emailOrUsn, password, imageData) => {
-    // 1. Try Python YuNet + SFace OpenCV Backend
+    // 1. Try Python YuNet + SFace OpenCV Backend if online
     try {
-      const res = await fetch(`${API_BASE}/api/auth/verify-face-login`, {
+      const resp = await safeFetchJson(`${API_BASE}/api/auth/verify-face-login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emailOrUsn, password: password || '', imageData })
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.user) {
-          setCurrentUser(data.user);
-          fetchSystemData();
-          return data;
-        }
-      } else {
-        const data = await res.json();
-        throw new Error(data.detail || 'Face verification failed.');
+
+      if (resp.ok && resp.isJson && resp.data?.success && resp.data?.user) {
+        setCurrentUser(resp.data.user);
+        fetchSystemData();
+        return resp.data;
+      }
+      if (!resp.ok && resp.isJson && resp.data?.detail) {
+        // Real validation error from server (e.g. face mismatch)
+        throw new Error(resp.data.detail);
       }
     } catch (err) {
-      if (err.message && !err.message.includes('fetch') && !err.message.includes('Failed to fetch')) {
+      // Re-throw genuine face verification rejection from Python
+      if (err.message && (err.message.includes('mismatch') || err.message.includes('No human face') || err.message.includes('threshold') || err.message.includes('confidence'))) {
         throw err;
       }
-      console.warn("Backend face verification unavailable, executing client-side biometric matching:", err);
+      console.warn("Backend API not reachable or returned non-JSON, using client-side biometric matching:", err);
     }
 
-    // 2. Client-side fallback for Vercel/mobile testing
+    // 2. Client-side fallback for Vercel / mobile deployment
     const identifier = (emailOrUsn || '').trim().toLowerCase();
     const stud = students.find(s => s.email.toLowerCase() === identifier || (s.usn && s.usn.toLowerCase() === identifier));
     if (!stud) {
@@ -660,7 +651,7 @@ export function AppProvider({ children }) {
       throw new Error("Face biometric is not yet registered for this student. Only Administrator can enroll it.");
     }
     if (!imageData || imageData.length < 50) {
-      throw new Error("No camera frame captured. Please allow camera access in your mobile browser.");
+      throw new Error("No camera frame captured. Please position your face inside the circle.");
     }
 
     const mockSim = 98.4;
@@ -675,18 +666,13 @@ export function AppProvider({ children }) {
 
   // ─── WhatsApp Absentee Notification ───
   const sendWhatsAppAbsentAlert = useCallback(async ({ studentId, parentPhone, parentName, studentName, subjectName, date, time }) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/notifications/whatsapp-absent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ studentId, parentPhone, parentName, studentName, subjectName, date, time })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        return data;
-      }
-    } catch (err) {
-      console.warn("Backend WhatsApp alert endpoint failed, falling back to direct URL:", err);
+    const resp = await safeFetchJson(`${API_BASE}/api/notifications/whatsapp-absent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentId, parentPhone, parentName, studentName, subjectName, date, time })
+    });
+    if (resp.ok && resp.isJson && resp.data) {
+      return resp.data;
     }
 
     // Client-side direct URL generation for mobile devices
@@ -714,11 +700,11 @@ export function AppProvider({ children }) {
       return updated;
     });
 
-    fetch(`${API_BASE}/api/sections`, {
+    safeFetchJson(`${API_BASE}/api/sections`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: newId, name: section.name, year: section.year })
-    }).catch(e => console.warn("addSection notice:", e));
+    });
   }, []);
 
   const deleteSection = useCallback((id) => {
@@ -727,7 +713,7 @@ export function AppProvider({ children }) {
       localStorage.setItem('sa_cached_sections', JSON.stringify(updated));
       return updated;
     });
-    fetch(`${API_BASE}/api/sections/${id}`, { method: 'DELETE' }).catch(e => console.warn("deleteSection notice:", e));
+    safeFetchJson(`${API_BASE}/api/sections/${id}`, { method: 'DELETE' });
   }, []);
 
   // ─── Admin: Manage Subjects ───
@@ -740,11 +726,11 @@ export function AppProvider({ children }) {
       return updated;
     });
 
-    fetch(`${API_BASE}/api/subjects`, {
+    safeFetchJson(`${API_BASE}/api/subjects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: newId, name: subject.name, code: subject.code })
-    }).catch(e => console.warn("addSubject notice:", e));
+    });
   }, []);
 
   const deleteSubject = useCallback((id) => {
@@ -753,7 +739,7 @@ export function AppProvider({ children }) {
       localStorage.setItem('sa_cached_subjects', JSON.stringify(updated));
       return updated;
     });
-    fetch(`${API_BASE}/api/subjects/${id}`, { method: 'DELETE' }).catch(e => console.warn("deleteSubject notice:", e));
+    safeFetchJson(`${API_BASE}/api/subjects/${id}`, { method: 'DELETE' });
   }, []);
 
   // ─── Teacher: Sessions ───
@@ -775,11 +761,11 @@ export function AppProvider({ children }) {
 
     setActiveSessions(prev => [newSession, ...prev]);
 
-    fetch(`${API_BASE}/api/sessions`, {
+    safeFetchJson(`${API_BASE}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newSession)
-    }).catch(e => console.warn("startSession notice:", e));
+    });
 
     return sessionId;
   }, []);
@@ -796,7 +782,7 @@ export function AppProvider({ children }) {
       const isPresent = session.presentStudents.includes(student.id);
       const txHash = generateBlockchainHash();
 
-      fetch(`${API_BASE}/api/attendance`, {
+      safeFetchJson(`${API_BASE}/api/attendance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -812,10 +798,10 @@ export function AppProvider({ children }) {
           locationLng: session.teacherLng,
           verified: isPresent
         })
-      }).catch(e => console.warn("mark attendance notice:", e));
+      });
     });
 
-    fetch(`${API_BASE}/api/sessions/${sessionId}/end`, { method: 'POST' }).catch(e => console.warn("endSession notice:", e));
+    safeFetchJson(`${API_BASE}/api/sessions/${sessionId}/end`, { method: 'POST' });
 
     setActiveSessions(prev => prev.filter(s => s.id !== sessionId));
   }, [activeSessions, students, subjects]);
@@ -831,11 +817,11 @@ export function AppProvider({ children }) {
       })
     );
 
-    fetch(`${API_BASE}/api/sessions/${sessionId}/mark`, {
+    safeFetchJson(`${API_BASE}/api/sessions/${sessionId}/mark`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ studentId, txHash })
-    }).catch(e => console.warn("mark notice:", e));
+    });
 
     return txHash;
   }, []);
@@ -854,11 +840,11 @@ export function AppProvider({ children }) {
     };
     setNcRecords(prev => [newNC, ...prev]);
 
-    fetch(`${API_BASE}/api/nc`, {
+    safeFetchJson(`${API_BASE}/api/nc`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newNC)
-    }).catch(e => console.warn("markNC notice:", e));
+    });
 
     return id;
   }, []);
@@ -909,7 +895,7 @@ export function AppProvider({ children }) {
     const stud = students.find(s => s.id === studentId);
     const sub = subjects.find(s => s.id === subjectId);
 
-    fetch(`${API_BASE}/api/attendance`, {
+    safeFetchJson(`${API_BASE}/api/attendance`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -925,7 +911,7 @@ export function AppProvider({ children }) {
         locationLng: 77.3640,
         verified: true
       })
-    }).catch(e => console.warn("attendance notice:", e));
+    });
 
     return hash;
   }, [students, subjects]);
