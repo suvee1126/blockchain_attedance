@@ -135,9 +135,19 @@ export default function TeacherDashboard() {
     }
   };
 
+  const activeSessionObj = (currentSession && typeof currentSession === 'object')
+    ? currentSession
+    : activeSessions.find(s => s.id === currentSession) || (currentSession ? {
+        id: currentSession,
+        subjectId: selectedSubjectId,
+        sectionId: selectedSectionId,
+        startedAt: new Date().toISOString()
+      } : null);
+
   const handleEndSession = () => {
     if (currentSession) {
-      endSession(currentSession.id);
+      const sessId = typeof currentSession === 'object' ? currentSession.id : currentSession;
+      endSession(sessId);
       setCurrentSession(null);
       setTimeLeft(0);
       setTeacherLocation(null);
@@ -537,14 +547,14 @@ export default function TeacherDashboard() {
                     <div className="bg-slate-950 p-4 rounded-3xl inline-block border-4 border-white shadow-lg">
                       <QRCodeSVG
                         value={JSON.stringify({
-                          session: subjects.find(s => s.id === currentSession.subjectId)?.code || 'AI-ML-0524',
-                          lat: teacherLocation?.lat || 0,
-                          lng: teacherLocation?.lng || 0,
+                          session: subjects.find(s => s.id === (activeSessionObj?.subjectId || selectedSubjectId))?.code || 'AI-ML-0524',
+                          sessionId: activeSessionObj?.id || (typeof currentSession === 'string' ? currentSession : `sess-${Date.now()}`),
+                          subjectId: activeSessionObj?.subjectId || selectedSubjectId,
+                          sectionId: activeSessionObj?.sectionId || selectedSectionId,
+                          lat: teacherLocation?.lat || activeSessionObj?.teacherLat || 12.9786,
+                          lng: teacherLocation?.lng || activeSessionObj?.teacherLng || 77.3640,
                           radius: 70,
-                          sessionId: currentSession.id,
-                          subjectId: currentSession.subjectId,
-                          sectionId: currentSession.sectionId,
-                          timestamp: currentSession.startedAt,
+                          timestamp: activeSessionObj?.startedAt || new Date().toISOString(),
                         })}
                         size={180}
                         level="H"
@@ -1229,7 +1239,7 @@ export default function TeacherDashboard() {
                 {subjects.find(s => s.id === currentSession.subjectId)?.name || 'Lecture Session'}
               </h2>
               <p className="text-base text-slate-500 font-semibold">
-                Section: {sections.find(s => s.id === currentSession.sectionId)?.name || 'N/A'} • Subject Code: {subjects.find(s => s.id === currentSession.subjectId)?.code || 'N/A'}
+                Section: {sections.find(s => s.id === (activeSessionObj?.sectionId || selectedSectionId))?.name || 'N/A'} • Subject Code: {subjects.find(s => s.id === (activeSessionObj?.subjectId || selectedSubjectId))?.code || 'N/A'}
               </p>
             </div>
 
@@ -1237,14 +1247,14 @@ export default function TeacherDashboard() {
             <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-2xl inline-block transform hover:scale-[1.01] transition-transform">
               <QRCodeSVG
                 value={JSON.stringify({
-                  session: subjects.find(s => s.id === currentSession.subjectId)?.code || 'AI-ML-0524',
-                  lat: teacherLocation?.lat || 0,
-                  lng: teacherLocation?.lng || 0,
+                  session: subjects.find(s => s.id === (activeSessionObj?.subjectId || selectedSubjectId))?.code || 'AI-ML-0524',
+                  sessionId: activeSessionObj?.id || (typeof currentSession === 'string' ? currentSession : `sess-${Date.now()}`),
+                  subjectId: activeSessionObj?.subjectId || selectedSubjectId,
+                  sectionId: activeSessionObj?.sectionId || selectedSectionId,
+                  lat: teacherLocation?.lat || activeSessionObj?.teacherLat || 12.9786,
+                  lng: teacherLocation?.lng || activeSessionObj?.teacherLng || 77.3640,
                   radius: 70,
-                  sessionId: currentSession.id,
-                  subjectId: currentSession.subjectId,
-                  sectionId: currentSession.sectionId,
-                  timestamp: currentSession.startedAt,
+                  timestamp: activeSessionObj?.startedAt || new Date().toISOString(),
                 })}
                 size={320}
                 level="H"

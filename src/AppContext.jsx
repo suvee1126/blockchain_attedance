@@ -27,6 +27,52 @@ async function safeFetchJson(url, options = {}) {
   }
 }
 
+const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/smart-add-f776e/databases/(default)/documents';
+
+function parseFirestoreDoc(doc) {
+  if (!doc || !doc.fields) return null;
+  const res = {};
+  for (const [k, v] of Object.entries(doc.fields)) {
+    if (v.stringValue !== undefined) res[k] = v.stringValue;
+    else if (v.integerValue !== undefined) res[k] = parseInt(v.integerValue, 10);
+    else if (v.doubleValue !== undefined) res[k] = parseFloat(v.doubleValue);
+    else if (v.booleanValue !== undefined) res[k] = v.booleanValue;
+    else if (v.arrayValue !== undefined) {
+      const arr = v.arrayValue.values || [];
+      res[k] = arr.map(item => {
+        if (item.stringValue !== undefined) return item.stringValue;
+        if (item.integerValue !== undefined) return parseInt(item.integerValue, 10);
+        if (item.doubleValue !== undefined) return parseFloat(item.doubleValue);
+        return item;
+      });
+    }
+  }
+  return res;
+}
+
+function toFirestoreFields(obj) {
+  const fields = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    if (typeof v === 'string') fields[k] = { stringValue: v };
+    else if (typeof v === 'number') {
+      if (Number.isInteger(v)) fields[k] = { integerValue: String(v) };
+      else fields[k] = { doubleValue: v };
+    } else if (typeof v === 'boolean') fields[k] = { booleanValue: v };
+    else if (Array.isArray(v)) {
+      fields[k] = {
+        arrayValue: {
+          values: v.map(item => {
+            if (typeof item === 'number') return { integerValue: String(item) };
+            return { stringValue: String(item) };
+          })
+        }
+      };
+    }
+  }
+  return { fields };
+}
+
 export function AppProvider({ children }) {
   // Initialize states with local cached data or seed data so mobile / reload never blanks out
   const [students, setStudents] = useState(() => {
@@ -75,10 +121,77 @@ export function AppProvider({ children }) {
 
   const [currentUser, setCurrentUser] = useState(null);
   const [attendanceRecords, setAttendanceRecords] = useState({});
-  const [activeSessions, setActiveSessions] = useState([]);
+  const [activeSessions, setActiveSessions] = useState(() => {
+    try {
+      const c = localStorage.getItem('sa_active_sessions');
+      if (c) {
+        const parsed = JSON.parse(c);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
   const [ncRecords, setNcRecords] = useState([]);
 
   const [firebaseStatus, setFirebaseStatus] = useState(null);
+
+  // Dedicated sessions refresh from Python backend or Cloud Firestore
+  const refreshSessions = useCallback(async () => {
+    // 1. Try local Python API
+    const resp = await safeFetchJson(`${API_BASE}/api/system/data`);
+    if (resp.ok && resp.isJson && resp.data?.activeSessions) {
+      setActiveSessions(resp.data.activeSessions);
+      try { localStorage.setItem('sa_active_sessions', JSON.stringify(resp.data.activeSessions)); } catch {}
+      return resp.data.activeSessions;
+    }
+
+    // 2. Fetch directly from Cloud Firestore (cross-device cloud sync for mobile & Vercel)
+    try {
+      const fsRes = await fetch(`${FIRESTORE_BASE}/active_sessions`);
+      if (fsRes.ok) {
+        const fsData = await fsRes.json();
+        if (fsData.documents) {
+          const sessions = fsData.documents.map(parseFirestoreDoc).filter(Boolean);
+          setActiveSessions(sessions);
+          try { localStorage.setItem('sa_active_sessions', JSON.stringify(sessions)); } catch {}
+          return sessions;
+        } else {
+          setActiveSessions([]);
+          try { localStorage.setItem('sa_active_sessions', JSON.stringify([])); } catch {}
+        }
+      }
+    } catch (e) {
+      console.warn("Firestore active_sessions fetch skipped:", e);
+    }
+
+    // 3. Fallback to localStorage cache
+    try {
+      const cached = localStorage.getItem('sa_active_sessions');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) {
+          setActiveSessions(parsed);
+          return parsed;
+        }
+      }
+    } catch {}
+
+    return [];
+  }, []);
+
+  // Listen for storage events across browser tabs
+  useEffect(() => {
+    const handleStorage = (e) => {
+      if (e.key === 'sa_active_sessions' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) setActiveSessions(parsed);
+        } catch {}
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
 
   // Load system data from Python API on mount (with Supabase/local fallback)
   const fetchSystemData = useCallback(async () => {
@@ -101,12 +214,18 @@ export function AppProvider({ children }) {
         setStudents(pyData.students);
         localStorage.setItem('sa_cached_students', JSON.stringify(pyData.students));
       }
-      if (pyData.activeSessions) setActiveSessions(pyData.activeSessions);
+      if (pyData.activeSessions) {
+        setActiveSessions(pyData.activeSessions);
+        try { localStorage.setItem('sa_active_sessions', JSON.stringify(pyData.activeSessions)); } catch {}
+      }
       if (pyData.ncRecords) setNcRecords(pyData.ncRecords);
       if (pyData.attendanceRecords) setAttendanceRecords(pyData.attendanceRecords);
       if (pyData.firebase) setFirebaseStatus(pyData.firebase);
       return pyData;
     }
+
+    // Refresh active sessions from Firestore Cloud
+    await refreshSessions();
 
     // Supabase fallback only if online
     try {
@@ -759,7 +878,11 @@ export function AppProvider({ children }) {
       teacherLng: teacherLng || 77.3640
     };
 
-    setActiveSessions(prev => [newSession, ...prev]);
+    setActiveSessions(prev => {
+      const updated = [newSession, ...prev.filter(s => s.id !== sessionId)];
+      try { localStorage.setItem('sa_active_sessions', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
 
     safeFetchJson(`${API_BASE}/api/sessions`, {
       method: 'POST',
@@ -767,7 +890,14 @@ export function AppProvider({ children }) {
       body: JSON.stringify(newSession)
     });
 
-    return sessionId;
+    // Cloud Firestore synchronization for cross-device & mobile access
+    fetch(`${FIRESTORE_BASE}/active_sessions?documentId=${sessionId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(toFirestoreFields(newSession))
+    }).catch(e => console.warn("Firestore startSession sync skipped:", e));
+
+    return newSession;
   }, []);
 
   const endSession = useCallback((sessionId) => {
@@ -803,19 +933,45 @@ export function AppProvider({ children }) {
 
     safeFetchJson(`${API_BASE}/api/sessions/${sessionId}/end`, { method: 'POST' });
 
-    setActiveSessions(prev => prev.filter(s => s.id !== sessionId));
+    // Remove from Cloud Firestore
+    fetch(`${FIRESTORE_BASE}/active_sessions/${sessionId}`, { method: 'DELETE' })
+      .catch(e => console.warn("Firestore endSession sync skipped:", e));
+
+    setActiveSessions(prev => {
+      const updated = prev.filter(s => s.id !== sessionId);
+      try { localStorage.setItem('sa_active_sessions', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
   }, [activeSessions, students, subjects]);
 
   const markAttendance = useCallback((sessionId, studentId) => {
     const txHash = generateBlockchainHash();
-    setActiveSessions(prev =>
-      prev.map(s => {
+    setActiveSessions(prev => {
+      const updated = prev.map(s => {
         if (s.id === sessionId && !s.presentStudents.includes(studentId)) {
-          return { ...s, presentStudents: [...s.presentStudents, studentId] };
+          const newPresent = [...s.presentStudents, studentId];
+          // Cloud update for active session attendance
+          fetch(`${FIRESTORE_BASE}/active_sessions/${sessionId}?updateMask.fieldPaths=presentStudents`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fields: {
+                presentStudents: {
+                  arrayValue: {
+                    values: newPresent.map(id => ({ integerValue: String(id) }))
+                  }
+                }
+              }
+            })
+          }).catch(e => console.warn("Firestore markAttendance sync skipped:", e));
+
+          return { ...s, presentStudents: newPresent };
         }
         return s;
-      })
-    );
+      });
+      try { localStorage.setItem('sa_active_sessions', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
 
     safeFetchJson(`${API_BASE}/api/sessions/${sessionId}/mark`, {
       method: 'POST',
@@ -922,7 +1078,7 @@ export function AppProvider({ children }) {
     attendanceRecords, activeSessions, ncRecords, stats,
     firebaseStatus,
     // Auth & DB operations
-    login, logout, register, clearDatabase, fetchSystemData,
+    login, logout, register, clearDatabase, fetchSystemData, refreshSessions,
     // Admin actions
     addTeacher, deleteTeacher, updateTeacherAssignments,
     addStudent, updateStudent, deleteStudent, enrollStudentFace, removeStudentFace, verifyFaceLogin,

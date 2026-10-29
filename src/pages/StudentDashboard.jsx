@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import jsQR from 'jsqr';
 import { useApp } from '../AppContext';
 import { shortenHash, formatDate, formatTime, haversineDistance, getCurrentPosition } from '../utils';
 import { SummitLogo } from '../components/SummitLogo';
@@ -18,7 +19,8 @@ export default function StudentDashboard() {
     studentMarkAttendance,
     verifyFaceLogin,
     logout,
-    fetchSystemData
+    fetchSystemData,
+    refreshSessions,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState('tracker'); // tracker | scanner | history
@@ -27,6 +29,17 @@ export default function StudentDashboard() {
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
   const [selectedActiveSessionId, setSelectedActiveSessionId] = useState('');
+  const [detectedSessionData, setDetectedSessionData] = useState(null);
+  const [scannerCameraError, setScannerCameraError] = useState('');
+  const [isRefreshingSessions, setIsRefreshingSessions] = useState(false);
+  const [showManualCodeInput, setShowManualCodeInput] = useState(false);
+  const [manualCodeInput, setManualCodeInput] = useState('');
+
+  const scannerVideoRef = useRef(null);
+  const [scannerStream, setScannerStream] = useState(null);
+  const qrCanvasRef = useRef(null);
+  const scanLoopRef = useRef(null);
+  const qrFileInputRef = useRef(null);
 
   // GPS location verification states
   const [locationResult, setLocationResult] = useState(null); // { verified: bool, distance: number } or null
@@ -243,6 +256,142 @@ export default function StudentDashboard() {
   const totalPresent = Object.values(studentAttendance).reduce((acc, curr) => acc + (curr.presentCount || 0), 0);
   const overallPercentage = totalClasses > 0 ? Math.round((totalPresent / totalClasses) * 100) : 0;
 
+  // Auto-refresh sessions when student opens the scanner tab
+  useEffect(() => {
+    if (activeTab === 'scanner') {
+      refreshSessions?.();
+      const interval = setInterval(() => {
+        refreshSessions?.();
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab, refreshSessions]);
+
+  const handleRefreshSessions = async () => {
+    setIsRefreshingSessions(true);
+    try {
+      if (refreshSessions) await refreshSessions();
+      else if (fetchSystemData) await fetchSystemData();
+    } finally {
+      setTimeout(() => setIsRefreshingSessions(false), 600);
+    }
+  };
+
+  const startQrFrameAnalysis = (video) => {
+    if (!qrCanvasRef.current) {
+      qrCanvasRef.current = document.createElement('canvas');
+    }
+    const canvas = qrCanvasRef.current;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let active = true;
+
+    const tick = () => {
+      if (!active) return;
+      if (video && video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, {
+          inversionAttempts: 'dontInvert',
+        });
+
+        if (code && code.data) {
+          active = false;
+          handleQrDataFound(code.data);
+          return;
+        }
+      }
+      scanLoopRef.current = requestAnimationFrame(tick);
+    };
+
+    scanLoopRef.current = requestAnimationFrame(tick);
+  };
+
+  const handleQrDataFound = async (qrRawData) => {
+    if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
+    try { navigator.vibrate?.(150); } catch {}
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(qrRawData);
+    } catch {
+      parsed = { sessionId: qrRawData, session: qrRawData };
+    }
+
+    setDetectedSessionData(parsed);
+    setScanStage('face');
+
+    // Capture location for distance check
+    let studentLoc = null;
+    try {
+      studentLoc = await getCurrentPosition();
+    } catch {
+      // Graceful fallback if location blocked
+    }
+
+    // Switch camera to front camera for face verification if available
+    try {
+      if (scannerStream) {
+        scannerStream.getTracks().forEach(t => t.stop());
+      }
+      const frontStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' }
+      }).catch(() => navigator.mediaDevices.getUserMedia({ video: true }));
+
+      setScannerStream(frontStream);
+      if (scannerVideoRef.current) {
+        scannerVideoRef.current.srcObject = frontStream;
+        scannerVideoRef.current.play().catch(() => {});
+      }
+    } catch {}
+
+    // Complete biometric identity match & on-chain verification
+    setTimeout(async () => {
+      setScanning(false);
+
+      const targetSessionId = parsed.sessionId || selectedActiveSessionId;
+      const session = activeSessions.find(s => s.id === targetSessionId) || parsed;
+      const teacherLat = session?.lat || session?.teacherLat;
+      const teacherLng = session?.lng || session?.teacherLng;
+
+      let distanceMeters = 15;
+      let isWithinRange = true;
+
+      if (teacherLat !== undefined && teacherLng !== undefined && studentLoc) {
+        distanceMeters = Math.round(haversineDistance(teacherLat, teacherLng, studentLoc.lat, studentLoc.lng));
+        isWithinRange = distanceMeters <= 70;
+      }
+
+      setLocationResult({ verified: isWithinRange, distance: distanceMeters });
+
+      if (isWithinRange) {
+        setScanStage('success');
+        let txHash = '';
+        if (targetSessionId) {
+          txHash = markAttendance(targetSessionId, currentUser.id);
+        } else {
+          const subId = parsed.subjectId || currentUser.subjectIds?.[0] || 'sub1';
+          txHash = studentMarkAttendance(currentUser.id, subId);
+        }
+
+        setScanResult({
+          success: true,
+          hash: txHash,
+          sessionName: parsed.session || subjects.find(s => s.id === parsed.subjectId)?.name || 'Lecture Session'
+        });
+
+        // Stop camera tracks
+        if (scannerStream) {
+          scannerStream.getTracks().forEach(t => t.stop());
+        }
+      } else {
+        setScanStage('failed');
+        setScanResult(null);
+      }
+    }, 2000);
+  };
+
   // Handle mandatory multi-stage Secure Check-In: QR Code scan first, immediately followed by Biometric Face Scan
   const handleStartSecureCheckIn = async (sessionId = '') => {
     setSelectedActiveSessionId(sessionId);
@@ -252,69 +401,101 @@ export default function StudentDashboard() {
     setScanResult(null);
     setLocationResult(null);
     setLocationError('');
+    setScannerCameraError('');
+    setDetectedSessionData(null);
+    setShowManualCodeInput(false);
 
-    // Capture student's current coordinates using browser Geolocation
-    let studentLoc = null;
+    // Request camera feed with rear preference for QR scanning
     try {
-      studentLoc = await getCurrentPosition();
-    } catch (err) {
-      console.error(err);
-      setLocationError('Please enable location access to use attendance system');
-      setScanning(false);
-      setScanStage('failed');
-      return;
-    }
-
-    // QR Scan stage completes after 2.5 seconds, then automatically transitions to biometric Face Scan stage
-    setTimeout(() => {
-      setScanStage('face');
-      
-      // Face recognition stage completes after 2.5 seconds, validating identity and recording on-chain
-      setTimeout(() => {
-        setScanning(false);
-
-        // Find active session coordinates
-        const session = activeSessions.find(s => s.id === sessionId);
-        const teacherLat = session?.teacherLat;
-        const teacherLng = session?.teacherLng;
-
-        let distanceMeters = 0;
-        let isWithinRange = true;
-
-        if (teacherLat !== undefined && teacherLng !== undefined && studentLoc) {
-          distanceMeters = haversineDistance(teacherLat, teacherLng, studentLoc.lat, studentLoc.lng);
-          isWithinRange = distanceMeters <= 70;
-        }
-
-        setLocationResult({ verified: isWithinRange, distance: distanceMeters });
-
-        if (isWithinRange) {
-          setScanStage('success');
-          let txHash = '';
-          if (sessionId) {
-            txHash = markAttendance(sessionId, currentUser.id);
-          } else {
-            const randomSubjectId = currentUser.subjectIds[0] || 'sub1';
-            txHash = studentMarkAttendance(currentUser.id, randomSubjectId);
-          }
-          setScanResult({
-            success: true,
-            hash: txHash,
+      let stream = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+      } catch {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'environment' }
           });
-        } else {
-          setScanStage('failed');
-          setScanResult(null);
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
         }
-      }, 2500);
-    }, 2500);
+      }
+
+      setScannerStream(stream);
+
+      const attachVideo = () => {
+        const video = scannerVideoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          video.setAttribute('playsinline', 'true');
+          video.setAttribute('webkit-playsinline', 'true');
+          video.muted = true;
+          video.onloadedmetadata = () => {
+            video.play().catch(e => console.warn('Scanner video play deferred:', e));
+            startQrFrameAnalysis(video);
+          };
+        }
+      };
+
+      attachVideo();
+      setTimeout(attachVideo, 100);
+      setTimeout(attachVideo, 300);
+
+    } catch (err) {
+      console.warn("Camera start error:", err);
+      setScannerCameraError("Camera unavailable or permission denied. You can upload a photo of the QR code below or enter the session code.");
+    }
+  };
+
+  const handleQrFileUploaded = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imgData = ctx.getImageData(0, 0, img.width, img.height);
+        const code = jsQR(imgData.data, imgData.width, imgData.height);
+        if (code && code.data) {
+          handleQrDataFound(code.data);
+        } else {
+          setScannerCameraError("Could not detect a valid QR code in that image. Please try another photo or enter the code manually.");
+        }
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleManualCodeSubmit = (e) => {
+    e.preventDefault();
+    if (!manualCodeInput.trim()) return;
+    handleQrDataFound(manualCodeInput.trim());
   };
 
   const closeScanner = () => {
+    if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
+    if (scannerStream) {
+      scannerStream.getTracks().forEach(t => t.stop());
+      setScannerStream(null);
+    }
     setShowScanner(false);
     setScanStage('idle');
+    setScanning(false);
     setScanResult(null);
     setLocationResult(null);
     setLocationError('');
+    setScannerCameraError('');
+    setDetectedSessionData(null);
+    setShowManualCodeInput(false);
+    setManualCodeInput('');
   };
 
   // ─── POST-LOGIN REAL FACE VERIFICATION OVERLAY ───
@@ -757,26 +938,86 @@ export default function StudentDashboard() {
         {/* Tab 2: Scanning Section */}
         {activeTab === 'scanner' && (
           <div className="space-y-6">
-            <div>
-              <h2 className="text-xl font-extrabold text-slate-800">Scan Attendance</h2>
-              <p className="text-sm text-slate-500 mt-0.5">Use your mobile camera to scan active QR codes or verify biometric face records</p>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-extrabold text-slate-800">Scan Attendance</h2>
+                <p className="text-sm text-slate-500 mt-0.5">Use your mobile camera to scan active classroom QR codes and verify biometric presence</p>
+              </div>
+              <button
+                onClick={handleRefreshSessions}
+                disabled={isRefreshingSessions}
+                className="self-start sm:self-auto inline-flex items-center gap-2 px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-xl shadow-sm cursor-pointer transition-all active:scale-95"
+              >
+                <span className={isRefreshingSessions ? 'animate-spin inline-block' : 'inline-block'}>🔄</span>
+                {isRefreshingSessions ? 'Checking Cloud...' : 'Refresh Active Sessions'}
+              </button>
+            </div>
+
+            {/* Quick Action Camera Scan Card (ALWAYS VISIBLE) */}
+            <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 rounded-3xl p-6 text-white shadow-xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full blur-2xl -mr-16 -mt-16 pointer-events-none" />
+              <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-5">
+                <div className="space-y-1.5">
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/20 backdrop-blur-md text-[11px] font-black uppercase tracking-wider">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    Instant Classroom Scanner
+                  </div>
+                  <h3 className="text-xl font-black tracking-tight">Point Camera at Teacher's QR Code</h3>
+                  <p className="text-blue-100 text-xs max-w-lg leading-relaxed">
+                    Scan the lecture QR code displayed on the classroom screen, TV, or projector. The app will automatically decode the session and record your attendance on the blockchain.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2.5">
+                  <button
+                    onClick={() => handleStartSecureCheckIn()}
+                    className="px-6 py-3.5 bg-white text-blue-700 hover:bg-blue-50 font-black text-sm rounded-2xl shadow-lg transition-transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    📷 Scan Teacher's QR Code
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/* Live active sessions detected */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-              <h3 className="font-extrabold text-slate-800 flex items-center gap-2 mb-4">
-                <span className="relative flex h-3 w-3">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-                </span>
-                Active Lecturing Sessions
-              </h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-extrabold text-slate-800 flex items-center gap-2">
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                  </span>
+                  Active Lecturing Sessions
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                    {sectionActiveSessions.length} active
+                  </span>
+                </h3>
+              </div>
 
               {sectionActiveSessions.length === 0 ? (
-                <div className="bg-slate-50 rounded-2xl border border-slate-100 p-8 text-center">
+                <div className="bg-slate-50 rounded-2xl border border-slate-100 p-8 text-center space-y-4">
                   <span className="text-4xl">📭</span>
-                  <p className="text-sm font-bold text-slate-700 mt-3">No Active Sessions Detected</p>
-                  <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">Ask your teacher to generate a session QR code to mark your attendance on the blockchain ledger.</p>
+                  <div>
+                    <p className="text-sm font-bold text-slate-700">No Pre-Cached Sessions in Your Section</p>
+                    <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                      Has your teacher generated the QR code on their screen? Tap the button below to point your camera and scan it directly!
+                    </p>
+                  </div>
+                  <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-1">
+                    <button
+                      onClick={() => handleStartSecureCheckIn()}
+                      className="w-full sm:w-auto px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      📷 Open Camera & Scan QR Code
+                    </button>
+                    <button
+                      onClick={handleRefreshSessions}
+                      disabled={isRefreshingSessions}
+                      className="w-full sm:w-auto px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs rounded-xl border border-slate-200 shadow-sm cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      <span className={isRefreshingSessions ? 'animate-spin inline-block' : 'inline-block'}>🔄</span>
+                      {isRefreshingSessions ? 'Checking...' : 'Check Cloud Again'}
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -804,7 +1045,7 @@ export default function StudentDashboard() {
                             onClick={() => handleStartSecureCheckIn(session.id)}
                             className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-xs font-extrabold text-white rounded-xl shadow-md hover:scale-[1.01] transition-all cursor-pointer"
                           >
-                            ⚡ Secure Presence Check-In (QR + Face)
+                            ⚡ Scan QR for this Session
                           </button>
                         </div>
                       </div>
@@ -813,8 +1054,6 @@ export default function StudentDashboard() {
                 </div>
               )}
             </div>
-
-
           </div>
         )}
 
@@ -903,103 +1142,139 @@ export default function StudentDashboard() {
 
       {/* ── Secure Camera Scanning Modal Overlay ── */}
       {showScanner && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col p-6 relative">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-md">
+          <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col p-6 relative max-h-[95vh] overflow-y-auto">
             <button
               onClick={closeScanner}
-              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold cursor-pointer"
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold cursor-pointer z-20"
             >
               ✕
             </button>
 
-            <h3 className="font-extrabold text-slate-900 text-lg mt-2 text-center">
-              {scanStage === 'qr' && '📷 Stage 1: Scanning QR Code'}
+            <h3 className="font-extrabold text-slate-900 text-lg mt-1 text-center">
+              {scanStage === 'qr' && '📷 Stage 1: Point at Teacher\'s QR'}
               {scanStage === 'face' && '👤 Stage 2: Face Biometrics'}
-              {scanStage === 'success' && '✓ Secure Check-In Verified'}
-              {scanStage === 'failed' && '❌ Location Verification Failed'}
+              {scanStage === 'success' && '✓ Attendance Verified'}
+              {scanStage === 'failed' && '❌ Check-In Denied'}
             </h3>
-            <p className="text-xs text-slate-500 text-center mt-1">
-              {scanStage === 'qr' && 'Align lecturing screen QR code within scanner target area...'}
-              {scanStage === 'face' && 'QR verified! Point front camera at your face to verify biometric ID...'}
-              {scanStage === 'success' && 'Presence authenticated on blockchain ledger'}
-              {scanStage === 'failed' && 'You are not in the classroom range'}
+            <p className="text-xs text-slate-500 text-center mt-0.5">
+              {scanStage === 'qr' && 'Hold phone steady facing the lecture screen QR code...'}
+              {scanStage === 'face' && 'QR decoded! Verifying biometric presence & GPS boundary...'}
+              {scanStage === 'success' && 'Signed and recorded on blockchain ledger'}
+              {scanStage === 'failed' && (locationError || 'Verification requirements not satisfied')}
             </p>
 
-            {locationError && (
-              <div className="mt-3 flex items-center gap-2 rounded-xl bg-rose-50 border border-rose-200 px-4 py-2.5 text-xs text-rose-700 font-semibold leading-relaxed">
-                <span className="text-sm">⚠️</span>
-                <p>{locationError}</p>
-              </div>
-            )}
+            {/* Hidden File Input for QR Image Upload Fallback */}
+            <input
+              type="file"
+              ref={qrFileInputRef}
+              onChange={handleQrFileUploaded}
+              accept="image/*"
+              className="hidden"
+            />
 
-            {/* Scanner Animation Target Viewport */}
-            <div className="my-6 relative aspect-square bg-slate-950 rounded-2xl overflow-hidden border-2 border-slate-800 flex items-center justify-center">
-              {scanning ? (
+            {/* Scanner Viewport */}
+            <div className="my-4 relative aspect-square bg-slate-950 rounded-2xl overflow-hidden border-2 border-slate-800 flex items-center justify-center shadow-inner">
+              {(scanStage === 'qr' || scanStage === 'face') && (
                 <>
-                  {scanStage === 'qr' ? (
-                    /* QR Target Box with animation */
-                    <div className="w-48 h-48 border-2 border-blue-500/80 rounded-2xl relative">
-                      {/* Corner Bracket styling */}
-                      <span className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-blue-500 -mt-0.5 -ml-0.5 rounded-tl" />
-                      <span className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-blue-500 -mt-0.5 -mr-0.5 rounded-tr" />
-                      <span className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-blue-500 -mb-0.5 -ml-0.5 rounded-bl" />
-                      <span className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-blue-500 -mb-0.5 -mr-0.5 rounded-br" />
- 
-                      {/* Moving Scan bar */}
-                      <div className="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-blue-500 to-transparent animate-scan-line top-0" />
-                    </div>
-                  ) : (
-                    /* Face Biometric outline and rings */
-                    <div className="relative w-48 h-48 rounded-full border border-blue-500/30 flex items-center justify-center">
-                      <div className="absolute w-44 h-44 rounded-full border-2 border-dashed border-blue-500/50 animate-spin" />
-                      <div className="absolute w-36 h-36 rounded-full border border-blue-400 bg-blue-500/10 animate-face-ring" />
-                      <span className="text-5xl">👤</span>
+                  {/* Live video feed from camera */}
+                  <video
+                    ref={scannerVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+
+                  {/* Stage 1: QR Scanning Overlays */}
+                  {scanStage === 'qr' && (
+                    <div className="relative z-10 w-full h-full flex flex-col items-center justify-center p-4">
+                      <div className="w-48 h-48 border-2 border-emerald-400 rounded-2xl relative shadow-2xl">
+                        {/* Corner brackets */}
+                        <span className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-emerald-400 -mt-0.5 -ml-0.5 rounded-tl" />
+                        <span className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-emerald-400 -mt-0.5 -mr-0.5 rounded-tr" />
+                        <span className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-emerald-400 -mb-0.5 -ml-0.5 rounded-bl" />
+                        <span className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-emerald-400 -mb-0.5 -mr-0.5 rounded-br" />
+
+                        {/* Animated Laser Scanning Line */}
+                        <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-emerald-400 to-transparent animate-scan-line top-0 shadow-lg shadow-emerald-400/50" />
+                      </div>
+                      <span className="absolute bottom-3 bg-black/60 backdrop-blur-md px-3 py-1 rounded-full text-[10px] font-mono text-emerald-300 font-bold tracking-wider">
+                        Align QR within green frame
+                      </span>
                     </div>
                   )}
-                  <p className="absolute bottom-4 text-[10px] font-bold text-slate-300 font-mono animate-pulse tracking-wider">
-                    {scanStage === 'qr' ? 'Reading lecturing QR hash...' : 'Matching biometric signatures...'}
-                  </p>
+
+                  {/* Stage 2: Face Biometric Overlay */}
+                  {scanStage === 'face' && (
+                    <div className="relative z-10 w-full h-full flex flex-col items-center justify-center p-4 bg-blue-950/20 backdrop-blur-[1px]">
+                      <div className="relative w-44 h-44 rounded-full border border-blue-400/40 flex items-center justify-center">
+                        <div className="absolute w-44 h-44 rounded-full border-2 border-dashed border-blue-400 animate-spin" />
+                        <div className="absolute w-36 h-36 rounded-full border border-indigo-400 bg-blue-500/10 animate-pulse" />
+                        <span className="text-5xl opacity-80">👤</span>
+                      </div>
+                      <span className="absolute bottom-3 bg-black/70 backdrop-blur-md px-3 py-1 rounded-full text-[10px] font-mono text-blue-300 font-bold tracking-wider animate-pulse">
+                        Matching Face & Confirming GPS...
+                      </span>
+                    </div>
+                  )}
                 </>
-              ) : (
-                /* Scan result views */
-                scanStage === 'success' ? (
-                  <div className="text-center p-6 flex flex-col items-center">
-                    <div className="w-16 h-16 rounded-full bg-emerald-500 flex items-center justify-center text-white text-3xl shadow-sm mb-4 animate-bounce">
-                      ✓
-                    </div>
-                    <h4 className="font-extrabold text-white text-base">Verified & Authenticated</h4>
-                    <p className="text-[10px] text-emerald-400 font-bold mt-1 uppercase tracking-wide">
-                      Attendance Saved on Ledger
+              )}
+
+              {/* Camera Error Message inside Viewport */}
+              {scannerCameraError && scanStage === 'qr' && (
+                <div className="absolute inset-0 z-20 bg-slate-950/90 p-4 flex flex-col items-center justify-center text-center space-y-3">
+                  <span className="text-3xl">⚠️</span>
+                  <p className="text-xs text-rose-300 font-semibold">{scannerCameraError}</p>
+                  <button
+                    onClick={() => qrFileInputRef.current?.click()}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl cursor-pointer"
+                  >
+                    📁 Upload QR Screenshot Instead
+                  </button>
+                </div>
+              )}
+
+              {/* Scan Stage Success View */}
+              {scanStage === 'success' && (
+                <div className="text-center p-6 flex flex-col items-center">
+                  <div className="w-16 h-16 rounded-full bg-emerald-500 flex items-center justify-center text-white text-3xl shadow-lg mb-3 animate-bounce">
+                    ✓
+                  </div>
+                  <h4 className="font-extrabold text-white text-base">Verified & Authenticated</h4>
+                  <p className="text-[10px] text-emerald-400 font-bold mt-1 uppercase tracking-wider">
+                    {scanResult?.sessionName || 'Class Lecture Presence Confirmed'}
+                  </p>
+                  {locationResult && (
+                    <p className="text-xs text-emerald-300 font-semibold mt-2 leading-relaxed">
+                      ✅ Classroom Distance Verified ({locationResult.distance}m)
                     </p>
-                    {locationResult && (
-                      <p className="text-xs text-emerald-300 font-semibold mt-2.5 leading-relaxed">
-                        ✅ Location Verified — {locationResult.distance} meters from classroom
-                      </p>
-                    )}
+                  )}
+                </div>
+              )}
+
+              {/* Scan Stage Failed View */}
+              {scanStage === 'failed' && (
+                <div className="text-center p-6 flex flex-col items-center">
+                  <div className="w-16 h-16 rounded-full bg-rose-500 flex items-center justify-center text-white text-3xl shadow-lg mb-3">
+                    ✕
                   </div>
-                ) : scanStage === 'failed' ? (
-                  <div className="text-center p-6 flex flex-col items-center">
-                    <div className="w-16 h-16 rounded-full bg-rose-500 flex items-center justify-center text-white text-3xl shadow-sm mb-4">
-                      ✕
-                    </div>
-                    <h4 className="font-extrabold text-white text-base">Verification Failed</h4>
-                    {locationResult ? (
-                      <p className="text-xs text-rose-300 font-bold mt-2.5 leading-relaxed">
-                        ❌ Outside classroom range — {locationResult.distance} meters
-                      </p>
-                    ) : (
-                      <p className="text-xs text-rose-300 font-bold mt-2.5 leading-relaxed">
-                        ❌ Outside classroom range
-                      </p>
-                    )}
-                    <p className="text-[9px] text-slate-400 mt-2">Maximum range allowed: 70 meters</p>
-                  </div>
-                ) : null
+                  <h4 className="font-extrabold text-white text-base">Check-In Denied</h4>
+                  {locationResult && !locationResult.verified ? (
+                    <p className="text-xs text-rose-300 font-bold mt-2 leading-relaxed">
+                      ❌ Outside classroom boundary — {locationResult.distance}m away (max 70m)
+                    </p>
+                  ) : (
+                    <p className="text-xs text-rose-300 font-bold mt-2 leading-relaxed">
+                      {locationError || 'Face verification or session mismatch'}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
 
             {/* Stage Progress Indicators */}
-            <div className="flex justify-between items-center gap-1.5 px-4 mb-4 text-[10px] font-bold text-center">
+            <div className="flex justify-between items-center gap-1 px-2 mb-3 text-[10px] font-bold text-center">
               <span className={`flex-1 py-1 rounded-md border ${scanStage === 'qr' ? 'bg-blue-50 text-blue-700 border-blue-200 animate-pulse' : 'bg-slate-100 text-slate-400 border-slate-200'}`}>
                 1. QR Code
               </span>
@@ -1012,24 +1287,65 @@ export default function StudentDashboard() {
                 {scanStage === 'failed' ? '❌ Denied' : '3. Registered'}
               </span>
             </div>
- 
+
+            {/* Stage 1 Helper Action Buttons (Upload screenshot / Manual code) */}
+            {scanStage === 'qr' && (
+              <div className="space-y-2 mb-2">
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => qrFileInputRef.current?.click()}
+                    className="flex-1 py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    📁 Upload Photo
+                  </button>
+                  <button
+                    onClick={() => setShowManualCodeInput(!showManualCodeInput)}
+                    className="flex-1 py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    ⌨️ Enter Code
+                  </button>
+                </div>
+
+                {showManualCodeInput && (
+                  <form onSubmit={handleManualCodeSubmit} className="pt-2 flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="e.g. AI-ML-0524 or sess-id"
+                      value={manualCodeInput}
+                      onChange={(e) => setManualCodeInput(e.target.value)}
+                      className="flex-1 px-3 py-1.5 text-xs border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    />
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl cursor-pointer"
+                    >
+                      Verify
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
             {/* Bottom success message details */}
             {scanResult && (
-              <div className="space-y-3">
-                <div className="bg-emerald-50 rounded-2xl p-3 border border-emerald-100">
-                  <p className="text-xs text-emerald-800 font-semibold text-center">
-                    Attendance Marked Successfully!
+              <div className="space-y-3 mt-2">
+                <div className="bg-emerald-50 rounded-2xl p-3 border border-emerald-100 text-center">
+                  <p className="text-xs text-emerald-800 font-bold">
+                    ✓ Presence Successfully Confirmed!
+                  </p>
+                  <p className="text-[11px] text-emerald-600 mt-0.5">
+                    Your attendance is verified and signed on-chain.
                   </p>
                 </div>
                 <div>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide text-center">On-Chain Transaction ID</p>
-                  <p className="text-center font-mono text-[10px] bg-slate-100 rounded-lg p-2 border border-slate-200 mt-1 select-all break-all text-slate-600">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide text-center">Blockchain Transaction Hash</p>
+                  <p className="text-center font-mono text-[10px] bg-slate-100 rounded-lg p-2 border border-slate-200 mt-1 select-all break-all text-slate-600 font-semibold">
                     {scanResult.hash}
                   </p>
                 </div>
                 <button
                   onClick={closeScanner}
-                  className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-xs font-bold text-white rounded-xl shadow-sm cursor-pointer"
+                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-xs font-extrabold text-white rounded-xl shadow-md cursor-pointer transition-transform active:scale-95"
                 >
                   Return to Dashboard
                 </button>
@@ -1037,28 +1353,13 @@ export default function StudentDashboard() {
             )}
 
             {scanStage === 'failed' && (
-              <div className="space-y-3">
-                <div className="bg-rose-50 rounded-2xl p-3 border border-rose-100">
-                  <p className="text-xs text-rose-800 font-semibold text-center leading-relaxed">
-                    ❌ Attendance NOT marked — you are {locationResult?.distance ?? 0}m away (max 70m)
-                  </p>
-                </div>
+              <div className="space-y-3 mt-2">
                 <button
                   onClick={closeScanner}
-                  className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-white rounded-xl shadow-sm cursor-pointer"
+                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-white rounded-xl shadow-sm cursor-pointer"
                 >
                   Close & Try Again
                 </button>
-              </div>
-            )}
- 
-            {scanning && (
-              <div className="flex items-center justify-center gap-2 text-xs font-semibold text-slate-500">
-                <svg className="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                {scanStage === 'qr' ? 'Analyzing classroom QR...' : 'Deploying Block ledger confirmation...'}
               </div>
             )}
           </div>
