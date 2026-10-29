@@ -56,28 +56,95 @@ export default function StudentDashboard() {
     }
   }, [currentUser, navigate]);
 
+  const [capturedPhotoUrl, setCapturedPhotoUrl] = useState(null);
+  const fileInputRef = useRef(null);
+
   const startVerifyCamera = async () => {
     setCameraError('');
+    setCapturedPhotoUrl(null);
+
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      const isHttp = window.location.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(window.location.hostname);
+      const msg = isHttp 
+        ? "Mobile browsers block live webcam over insecure HTTP. Please open your secure HTTPS Vercel link, or tap 'Take Photo' below."
+        : "Camera is not supported on this device. Please tap 'Take Photo' below.";
+      setCameraError(msg);
+      setCameraReady(false);
+      return;
+    }
+
     try {
       if (verifyStream) {
         verifyStream.getTracks().forEach(t => t.stop());
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
-      });
+
+      let stream;
+      // Progressive constraints fallback for mobile compatibility
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
+        });
+      } catch (err1) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user' }
+          });
+        } catch (err2) {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
+      }
+
       setVerifyStream(stream);
       setCameraReady(true);
-      setTimeout(() => {
-        if (verifyVideoRef.current) {
-          verifyVideoRef.current.srcObject = stream;
-          verifyVideoRef.current.play().catch(e => console.warn("Video play notice:", e));
+
+      const attachVideo = () => {
+        const video = verifyVideoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          video.setAttribute("playsinline", "true");
+          video.setAttribute("webkit-playsinline", "true");
+          video.muted = true;
+          video.defaultMuted = true;
+          video.onloadedmetadata = () => {
+            video.play().catch(e => console.warn("Video play deferred:", e));
+          };
         }
-      }, 150);
+      };
+
+      // Try immediately and on next tick
+      attachVideo();
+      setTimeout(attachVideo, 100);
+      setTimeout(attachVideo, 300);
+
     } catch (err) {
       console.warn("Camera access error:", err);
       setCameraReady(false);
-      setCameraError("Camera permission denied. Please allow camera access in your browser to verify your face.");
+      let errorMsg = "Camera access denied. Please allow camera access in your browser permissions.";
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        errorMsg = "Camera permission was blocked. Please enable camera access in your browser site settings, or tap 'Take Photo' below.";
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        errorMsg = "Camera is already in use by another app or tab. Please close other camera apps, or tap 'Take Photo' below.";
+      } else if (window.location.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+        errorMsg = "Mobile browsers require HTTPS for live camera access. Please use your Vercel HTTPS link, or tap 'Take Photo' below.";
+      }
+      setCameraError(errorMsg);
     }
+  };
+
+  const handleSelfieFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result;
+      if (dataUrl) {
+        setCapturedPhotoUrl(dataUrl);
+        setCameraReady(true);
+        setCameraError('');
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   useEffect(() => {
@@ -98,13 +165,18 @@ export default function StudentDashboard() {
     setVerifySuccess('');
 
     try {
-      const video = verifyVideoRef.current;
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const capturedBase64 = canvas.toDataURL('image/jpeg', 0.88);
+      let capturedBase64 = capturedPhotoUrl;
+
+      if (!capturedBase64) {
+        const video = verifyVideoRef.current;
+        if (!video) throw new Error("No active camera or photo available.");
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        capturedBase64 = canvas.toDataURL('image/jpeg', 0.88);
+      }
 
       const res = await verifyFaceLogin(currentUser.email, '', capturedBase64);
       const matchScore = res?.similarityPercentage || res?.matchDetails?.similarityPercentage || 98.4;
@@ -347,55 +419,99 @@ export default function StudentDashboard() {
                   </p>
                 </div>
 
-                {/* Webcam Viewport */}
+                {/* Hidden File Input for Native Mobile Camera Snapshot */}
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept="image/*"
+                  capture="user"
+                  onChange={handleSelfieFileChange}
+                  className="hidden"
+                />
+
+                {/* Webcam / Snapshot Viewport */}
                 <div className="relative rounded-2xl overflow-hidden bg-slate-950 aspect-[4/3] flex items-center justify-center border-2 border-slate-700 shadow-inner">
-                  {cameraError ? (
-                    <div className="p-4 text-center text-rose-300 text-xs">
-                      <p className="text-2xl mb-1">🚫</p>
-                      <p className="font-semibold">{cameraError}</p>
-                      <button
-                        type="button"
-                        onClick={startVerifyCamera}
-                        className="mt-3 px-3 py-1.5 bg-blue-600 text-white font-bold rounded-lg text-xs"
-                      >
-                        Retry Camera Access
-                      </button>
-                    </div>
+                  {capturedPhotoUrl ? (
+                    <img
+                      src={capturedPhotoUrl}
+                      alt="Captured selfie"
+                      className="w-full h-full object-cover"
+                    />
                   ) : (
-                    <>
-                      <video
-                        ref={verifyVideoRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className="w-full h-full object-cover transform scale-x-[-1]"
-                      />
-
-                      {/* Biometric Target Reticle Overlay */}
-                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                        <div className={`w-40 h-52 border-2 rounded-[50%] transition-colors duration-300 flex items-center justify-center relative ${
-                          isVerifyingFace
-                            ? 'border-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.6)] animate-pulse'
-                            : 'border-blue-400/80 shadow-[0_0_18px_rgba(59,130,246,0.4)]'
-                        }`}>
-                          <div className="absolute top-0 w-3 h-0.5 bg-blue-300" />
-                          <div className="absolute bottom-0 w-3 h-0.5 bg-blue-300" />
-                          <div className="absolute left-0 h-3 w-0.5 bg-blue-300" />
-                          <div className="absolute right-0 h-3 w-0.5 bg-blue-300" />
-
-                          {isVerifyingFace && (
-                            <div className="absolute inset-x-2 h-0.5 bg-emerald-400 shadow-[0_0_8px_#34d399] animate-scan-line" />
-                          )}
-                        </div>
-                      </div>
-
-                      {/* HUD status pill */}
-                      <div className="absolute top-2.5 left-2.5 bg-slate-900/85 backdrop-blur-sm px-2.5 py-1 rounded-full text-[9px] font-bold text-white flex items-center gap-1.5 border border-white/10">
-                        <span className={`w-2 h-2 rounded-full ${cameraReady ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'}`} />
-                        <span>{cameraReady ? 'Live Camera Active' : 'Initializing Camera...'}</span>
-                      </div>
-                    </>
+                    <video
+                      ref={verifyVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-full object-cover transform scale-x-[-1]"
+                    />
                   )}
+
+                  {/* Biometric Target Reticle Overlay */}
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className={`w-40 h-52 border-2 rounded-[50%] transition-colors duration-300 flex items-center justify-center relative ${
+                      isVerifyingFace
+                        ? 'border-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.6)] animate-pulse'
+                        : 'border-blue-400/80 shadow-[0_0_18px_rgba(59,130,246,0.4)]'
+                    }`}>
+                      <div className="absolute top-0 w-3 h-0.5 bg-blue-300" />
+                      <div className="absolute bottom-0 w-3 h-0.5 bg-blue-300" />
+                      <div className="absolute left-0 h-3 w-0.5 bg-blue-300" />
+                      <div className="absolute right-0 h-3 w-0.5 bg-blue-300" />
+
+                      {isVerifyingFace && (
+                        <div className="absolute inset-x-2 h-0.5 bg-emerald-400 shadow-[0_0_8px_#34d399] animate-scan-line" />
+                      )}
+                    </div>
+                  </div>
+
+                  {/* HUD status pill */}
+                  <div className="absolute top-2.5 left-2.5 bg-slate-900/85 backdrop-blur-sm px-2.5 py-1 rounded-full text-[9px] font-bold text-white flex items-center gap-1.5 border border-white/10">
+                    <span className={`w-2 h-2 rounded-full ${capturedPhotoUrl ? 'bg-cyan-400' : cameraReady ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'}`} />
+                    <span>
+                      {capturedPhotoUrl ? 'Photo Ready for Matching' : cameraReady ? 'Live Camera Active' : 'Waiting for Camera...'}
+                    </span>
+                  </div>
+
+                  {/* Camera overlay fallback message if permission error */}
+                  {cameraError && !capturedPhotoUrl && (
+                    <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm p-4 flex flex-col items-center justify-center text-center">
+                      <p className="text-3xl mb-2">📷</p>
+                      <p className="text-xs font-semibold text-rose-300 leading-relaxed max-w-xs mb-3">
+                        {cameraError}
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer"
+                        >
+                          📸 Take Photo with Camera
+                        </button>
+                        <button
+                          type="button"
+                          onClick={startVerifyCamera}
+                          className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white font-semibold rounded-xl text-xs border border-white/20 cursor-pointer"
+                        >
+                          Retry Live Cam
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Mobile Snap Selfie Button (Alternative anytime) */}
+                <div className="flex items-center justify-between text-xs px-1">
+                  <span className="text-[11px] text-slate-400">
+                    {capturedPhotoUrl ? '✓ Photo captured from camera' : 'Having camera issues?'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 underline cursor-pointer"
+                  >
+                    {capturedPhotoUrl ? '🔄 Retake Photo' : '📸 Tap to Snap Selfie Directly'}
+                  </button>
                 </div>
 
                 {/* Error Banner */}

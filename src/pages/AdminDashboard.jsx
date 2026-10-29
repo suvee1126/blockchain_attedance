@@ -73,6 +73,8 @@ export default function AdminDashboard() {
   const [faceEnrollError, setFaceEnrollError] = useState('');
   const [faceEnrollSuccess, setFaceEnrollSuccess] = useState('');
   const adminFaceVideoRef = useRef(null);
+  const adminFaceFileInputRef = useRef(null);
+  const [adminCapturedPhotoUrl, setAdminCapturedPhotoUrl] = useState(null);
 
   // Form State: Section
   const [secName, setSecName] = useState('');
@@ -176,23 +178,63 @@ export default function AdminDashboard() {
     setFaceEnrollStudent(student);
     setFaceEnrollError('');
     setFaceEnrollSuccess('');
+    setAdminCapturedPhotoUrl(null);
     setShowFaceEnrollModal(true);
 
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      setFaceEnrollError("Live camera is not supported or blocked by browser. Please tap 'Upload / Snap Photo' below.");
+      return;
+    }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
-      });
-      setFaceStream(stream);
-      setTimeout(() => {
-        if (adminFaceVideoRef.current) {
-          adminFaceVideoRef.current.srcObject = stream;
-          adminFaceVideoRef.current.play().catch(e => console.error("Video play error:", e));
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
+        });
+      } catch (err1) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+        } catch (err2) {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
         }
-      }, 150);
+      }
+
+      setFaceStream(stream);
+      const attachVideo = () => {
+        const video = adminFaceVideoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          video.setAttribute("playsinline", "true");
+          video.setAttribute("webkit-playsinline", "true");
+          video.muted = true;
+          video.defaultMuted = true;
+          video.onloadedmetadata = () => {
+            video.play().catch(e => console.warn("Video play deferred:", e));
+          };
+        }
+      };
+      attachVideo();
+      setTimeout(attachVideo, 100);
+      setTimeout(attachVideo, 300);
     } catch (err) {
       console.error("Camera error:", err);
-      setFaceEnrollError("Camera permission denied. Please allow camera access in your browser to scan and enroll the student's face.");
+      setFaceEnrollError("Camera permission was denied. Please allow camera access in your browser settings or tap 'Upload / Snap Photo' below.");
     }
+  };
+
+  const handleAdminPhotoFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result;
+      if (dataUrl) {
+        setAdminCapturedPhotoUrl(dataUrl);
+        setFaceEnrollError('');
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleCloseFaceEnrollModal = () => {
@@ -202,24 +244,29 @@ export default function AdminDashboard() {
     }
     setShowFaceEnrollModal(false);
     setFaceEnrollStudent(null);
+    setAdminCapturedPhotoUrl(null);
     setFaceEnrollError('');
     setFaceEnrollSuccess('');
   };
 
   const handleCaptureAndEnrollFace = async () => {
-    if (!adminFaceVideoRef.current || !faceEnrollStudent) return;
+    if (!faceEnrollStudent) return;
     setIsCapturingFace(true);
     setFaceEnrollError('');
     setFaceEnrollSuccess('');
 
     try {
-      const video = adminFaceVideoRef.current;
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const capturedBase64 = canvas.toDataURL('image/jpeg', 0.9);
+      let capturedBase64 = adminCapturedPhotoUrl;
+      if (!capturedBase64) {
+        const video = adminFaceVideoRef.current;
+        if (!video) throw new Error("No active camera or photo available.");
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        capturedBase64 = canvas.toDataURL('image/jpeg', 0.9);
+      }
 
       const res = await enrollStudentFace(faceEnrollStudent.id, capturedBase64);
       setFaceEnrollSuccess("✅ Face biometric successfully enrolled & permanently saved on blockchain ledger!");
@@ -1397,30 +1444,60 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            {/* Camera Viewport with Biometric Overlay */}
+            <input
+              type="file"
+              ref={adminFaceFileInputRef}
+              accept="image/*"
+              capture="user"
+              onChange={handleAdminPhotoFileChange}
+              className="hidden"
+            />
+
+            {/* Camera / Photo Viewport with Biometric Overlay */}
             <div className="mt-4 relative rounded-2xl overflow-hidden bg-slate-950 aspect-[4/3] flex items-center justify-center border-2 border-slate-800 shadow-inner">
-              <video
-                ref={adminFaceVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-full h-full object-cover transform scale-x-[-1]"
-              />
+              {adminCapturedPhotoUrl ? (
+                <img
+                  src={adminCapturedPhotoUrl}
+                  alt="Student photo preview"
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <video
+                  ref={adminFaceVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover transform scale-x-[-1]"
+                />
+              )}
 
               {/* Face Target Scanner Frame */}
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="w-48 h-60 border-2 border-dashed border-emerald-400/80 rounded-[50%] shadow-[0_0_20px_rgba(16,185,129,0.3)] animate-pulse flex items-center justify-center">
                   <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-300 bg-slate-900/80 px-2 py-0.5 rounded-full mt-48">
-                    Align Face Here
+                    {adminCapturedPhotoUrl ? '✓ Photo Ready' : 'Align Face Here'}
                   </span>
                 </div>
               </div>
 
               {/* Status pill */}
               <div className="absolute top-3 left-3 bg-slate-900/80 backdrop-blur-sm px-2.5 py-1 rounded-full text-[10px] font-bold text-white flex items-center gap-1.5 border border-white/10">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-                <span>Live Camera Feed</span>
+                <span className={`w-2 h-2 rounded-full ${adminCapturedPhotoUrl ? 'bg-cyan-400' : 'bg-emerald-500 animate-ping'}`}></span>
+                <span>{adminCapturedPhotoUrl ? 'Photo Uploaded' : 'Live Camera Feed'}</span>
               </div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs px-1 mt-2">
+              <span className="text-[11px] text-slate-500">
+                {adminCapturedPhotoUrl ? '✓ Photo selected' : 'Camera having issues?'}
+              </span>
+              <button
+                type="button"
+                onClick={() => adminFaceFileInputRef.current?.click()}
+                className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 underline cursor-pointer"
+              >
+                {adminCapturedPhotoUrl ? '🔄 Retake / Choose Other Photo' : '📸 Snap Photo / Upload Selfie'}
+              </button>
             </div>
 
             {/* Error or Success feedback */}
