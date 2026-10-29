@@ -4,6 +4,7 @@ import subprocess
 import webbrowser
 import threading
 import time
+import socket
 
 # Ensure utf-8 encoding for Windows console
 if sys.platform == "win32":
@@ -11,6 +12,16 @@ if sys.platform == "win32":
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
+
+def get_local_wifi_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 def check_and_build_frontend():
     dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
@@ -35,11 +46,14 @@ if __name__ == "__main__":
     import uvicorn
     from backend.main import app
 
-    print("\n" + "=" * 60)
-    print(" [SMART ATTENDANCE] PYTHON SERVER STARTING")
-    print("=" * 60)
-    print(" * Application URL : http://127.0.0.1:8000/")
-    print(" * API Swagger UI  : http://127.0.0.1:8000/docs")
-    print("=" * 60 + "\n")
+    local_ip = get_local_wifi_ip()
 
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)
+    print("\n" + "=" * 65)
+    print(" [SMART ATTENDANCE] PYTHON SERVER STARTING")
+    print("=" * 65)
+    print(f" * Computer (Localhost) : http://127.0.0.1:8000/")
+    print(f" * Mobile Phone (Wi-Fi) : http://{local_ip}:8000/")
+    print(f" * API Swagger Docs     : http://127.0.0.1:8000/docs")
+    print("=" * 65 + "\n")
+
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
