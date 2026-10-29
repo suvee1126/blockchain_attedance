@@ -18,6 +18,7 @@ export default function TeacherDashboard() {
     endSession,
     markNC,
     attendanceRecords,
+    sendWhatsAppAbsentAlert,
   } = useApp();
 
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
@@ -29,6 +30,11 @@ export default function TeacherDashboard() {
   const [showNcModal, setShowNcModal] = useState(false);
   const [selectedAbsentStudent, setSelectedAbsentStudent] = useState(null);
   const [ncReason, setNcReason] = useState('');
+
+  // WhatsApp Absent Notification States
+  const [showWhatsAppCenterModal, setShowWhatsAppCenterModal] = useState(false);
+  const [whatsAppStatusMap, setWhatsAppStatusMap] = useState({}); // studentId -> 'sent'
+  const [toastMessage, setToastMessage] = useState('');
 
   // GPS & Projector states
   const [teacherLocation, setTeacherLocation] = useState(null);
@@ -82,6 +88,10 @@ export default function TeacherDashboard() {
             if (currentSession) {
               endSession(currentSession.id);
               setCurrentSession(null);
+              // Check if any student was absent and trigger WhatsApp modal
+              if (absentCount > 0) {
+                setShowWhatsAppCenterModal(true);
+              }
             }
             return 0;
           }
@@ -131,6 +141,9 @@ export default function TeacherDashboard() {
       setCurrentSession(null);
       setTimeLeft(0);
       setTeacherLocation(null);
+      if (absentCount > 0) {
+        setShowWhatsAppCenterModal(true);
+      }
     }
   };
 
@@ -191,6 +204,57 @@ export default function TeacherDashboard() {
 
   const totalStudents = activeSectionStudents.length;
   const presentPercentage = totalStudents > 0 ? Math.round((presentCount / totalStudents) * 100) : 0;
+
+
+  // ─── WhatsApp Absence Notification Handler ───
+
+  const handleNotifyAllSequential = () => {
+    const studentsWithPhone = absentStudents.filter(s => s.parentPhone && s.parentPhone.trim());
+    if (studentsWithPhone.length === 0) {
+      alert("None of the absent students have a parent WhatsApp phone number registered.\n\nPlease add parent numbers in the Admin Dashboard (Student panel).");
+      return;
+    }
+    // Open WhatsApp for the first student and show instruction
+    handleSendWhatsApp(studentsWithPhone[0]);
+    if (studentsWithPhone.length > 1) {
+      setToastMessage(`Opened WhatsApp for ${studentsWithPhone[0].name}. Click each 'Send WhatsApp' button to notify remaining parents.`);
+    }
+  };
+
+  const handleSendWhatsApp = async (student, customDate = null) => {
+    if (!student.parentPhone || !student.parentPhone.trim()) {
+      alert(`No parent WhatsApp phone number is configured for ${student.name} (${student.usn}).\n\nPlease add the parent's phone number in the Admin Dashboard -> Student Panel.`);
+      return;
+    }
+
+    const sub = subjects.find(s => s.id === selectedSubjectId);
+    const sec = sections.find(s => s.id === selectedSectionId);
+    const periodTime = currentSession ? formatTime(currentSession.startedAt) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const periodDate = customDate || (currentSession ? formatDate(currentSession.startedAt) : new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }));
+
+    setWhatsAppStatusMap(prev => ({ ...prev, [student.id]: 'sending' }));
+
+    const res = await sendWhatsAppAbsentAlert({
+      studentId: student.id,
+      parentName: student.parentName,
+      parentPhone: student.parentPhone,
+      studentName: student.name,
+      usn: student.usn,
+      subjectName: sub?.name || 'Class Lecture',
+      subjectCode: sub?.code || '',
+      sectionName: sec?.name || '',
+      date: periodDate,
+      periodTime: periodTime,
+    });
+
+    setWhatsAppStatusMap(prev => ({ ...prev, [student.id]: 'sent' }));
+
+    if (res?.whatsappUrl) {
+      window.open(res.whatsappUrl, '_blank');
+      setToastMessage(`WhatsApp chat opened for ${student.parentName || 'Parent'} (${student.name})`);
+      setTimeout(() => setToastMessage(''), 4500);
+    }
+  };
 
   // Handle Excusing absent student (NC marking)
   const openNcModal = (student) => {
@@ -549,6 +613,31 @@ export default function TeacherDashboard() {
                 </div>
               )}
 
+              {/* Absent Students WhatsApp Alert Banner */}
+              {absentCount > 0 && (
+                <div className="bg-gradient-to-r from-emerald-50 via-teal-50/50 to-white border border-emerald-200 rounded-3xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-11 h-11 rounded-2xl bg-emerald-600 text-white flex items-center justify-center text-xl font-bold shadow-md shadow-emerald-200">
+                      💬
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-extrabold text-slate-800 text-sm">{absentCount} Student{absentCount > 1 ? 's' : ''} Absent in this Lecture</h4>
+                        <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">Period Alert</span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">Send instant WhatsApp absence alerts with period details to parents' registered numbers.</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowWhatsAppCenterModal(true)}
+                    className="px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                  >
+                    <span>📱</span>
+                    <span>Notify Absent Parents</span>
+                  </button>
+                </div>
+              )}
+
               {/* Roster & NC Administration Table */}
               <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
                 <div className="p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-50/50">
@@ -577,7 +666,18 @@ export default function TeacherDashboard() {
                           <td className="py-3.5 px-6">
                             <div>
                               <p className="font-extrabold text-slate-800">{student.name}</p>
-                              <p className="text-[10px] text-slate-400">{student.email}</p>
+                              <p className="text-[10px] text-slate-400 font-mono">{student.email}</p>
+                              {!student.marked && !student.isNC && (
+                                <p className="text-[11px] text-emerald-700 font-medium mt-0.5 flex items-center gap-1">
+                                  <span>👤</span>
+                                  <span>Parent: <strong className="font-bold">{student.parentName || 'Not Set'}</strong></span>
+                                  {student.parentPhone ? (
+                                    <span className="text-slate-400 text-[10px]">({student.parentPhone})</span>
+                                  ) : (
+                                    <span className="text-rose-500 text-[10px] font-semibold">(No WhatsApp)</span>
+                                  )}
+                                </p>
+                              )}
                             </div>
                           </td>
                           <td className="py-3.5 px-6 font-mono text-xs text-slate-600 font-semibold">{student.usn}</td>
@@ -605,12 +705,26 @@ export default function TeacherDashboard() {
                           </td>
                           <td className="py-3.5 px-6 text-right">
                             {!student.marked && !student.isNC ? (
-                              <button
-                                onClick={() => openNcModal(student)}
-                                className="px-3 py-1 border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-bold rounded-lg transition-colors cursor-pointer"
-                              >
-                                Excuse Absence (NC)
-                              </button>
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  onClick={() => handleSendWhatsApp(student)}
+                                  className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1 shadow-xs ${
+                                    whatsAppStatusMap[student.id] === 'sent'
+                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                      : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                  }`}
+                                  title={student.parentPhone ? `Open WhatsApp for ${student.parentPhone}` : 'No phone number configured'}
+                                >
+                                  <span>💬</span>
+                                  <span>{whatsAppStatusMap[student.id] === 'sent' ? 'Notified ✓' : 'WhatsApp'}</span>
+                                </button>
+                                <button
+                                  onClick={() => openNcModal(student)}
+                                  className="px-3 py-1 border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                                >
+                                  Excuse (NC)
+                                </button>
+                              </div>
                             ) : student.hash ? (
                               <div className="flex flex-col items-end gap-0.5">
                                 <span className="text-[10px] text-slate-400 font-mono" title={student.hash}>
@@ -744,12 +858,26 @@ export default function TeacherDashboard() {
                               </td>
                               <td className="py-3.5 px-6 text-right">
                                 {student.status === 'Absent' ? (
-                                  <button
-                                    onClick={() => openHistoryNcModal(student)}
-                                    className="px-3 py-1 border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-bold rounded-lg transition-colors cursor-pointer"
-                                  >
-                                    Excuse Absence (NC)
-                                  </button>
+                                  <div className="flex items-center justify-end gap-2">
+                                    <button
+                                      onClick={() => handleSendWhatsApp(student, selectedHistoryDate)}
+                                      className={`px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1 shadow-xs ${
+                                        whatsAppStatusMap[student.id] === 'sent'
+                                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                          : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                      }`}
+                                      title={student.parentPhone ? `Send WhatsApp alert for past lecture` : 'No phone number configured'}
+                                    >
+                                      <span>💬</span>
+                                      <span>{whatsAppStatusMap[student.id] === 'sent' ? 'Notified ✓' : 'WhatsApp'}</span>
+                                    </button>
+                                    <button
+                                      onClick={() => openHistoryNcModal(student)}
+                                      className="px-3 py-1 border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                                    >
+                                      Excuse (NC)
+                                    </button>
+                                  </div>
                                 ) : student.hash ? (
                                   <div className="flex flex-col items-end gap-0.5">
                                     <span className="text-[10px] text-slate-400 font-mono" title={student.hash}>
@@ -933,6 +1061,157 @@ export default function TeacherDashboard() {
           </div>
         </div>
       )}
+      
+      {/* ── Modal: WhatsApp Absence Notification Center ── */}
+      {showWhatsAppCenterModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white rounded-3xl w-full max-w-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col p-6 relative max-h-[88vh]">
+            <button
+              onClick={() => setShowWhatsAppCenterModal(false)}
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold cursor-pointer"
+            >
+              ✕
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-emerald-600 text-white flex items-center justify-center text-xl font-bold shadow-sm">
+                💬
+              </div>
+              <div>
+                <h3 className="font-extrabold text-slate-900 text-lg">WhatsApp Absence Notification Center</h3>
+                <p className="text-xs text-slate-500">
+                  Notify parents of {absentStudents.length} absent student{absentStudents.length > 1 ? 's' : ''} for <span className="font-bold text-slate-800">{subjects.find(s => s.id === selectedSubjectId)?.name}</span>.
+                </p>
+              </div>
+            </div>
+
+            {/* Session Metadata Card */}
+            <div className="mt-4 p-4 bg-emerald-50/70 border border-emerald-100 rounded-2xl grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div>
+                <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block">Subject</span>
+                <span className="font-mono font-bold text-slate-800 truncate block">{subjects.find(s => s.id === selectedSubjectId)?.name || 'N/A'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block">Section</span>
+                <span className="font-bold text-slate-800">{sections.find(s => s.id === selectedSectionId)?.name || 'Class'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block">Date</span>
+                <span className="font-bold text-slate-800">{new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block">Period Time</span>
+                <span className="font-bold text-slate-800">{currentSession ? formatTime(currentSession.startedAt) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
+            </div>
+
+            {/* Exact WhatsApp Message Template Preview */}
+            <div className="mt-3 p-3.5 bg-slate-50 border border-slate-200 rounded-2xl">
+              <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider flex items-center gap-1.5 mb-1.5">
+                <span>💬</span>
+                <span>WhatsApp Notification Template Sent to Parents:</span>
+              </span>
+              <div className="text-xs text-slate-700 bg-white p-3 rounded-xl border border-slate-200/80 font-mono shadow-xs">
+                "Dear <strong className="text-emerald-700 font-bold">[Parent Name]</strong>, your student <strong className="text-slate-900 font-bold">[Student Name]</strong> (USN: <strong className="text-slate-900 font-bold">[USN]</strong>) was absent for <strong className="text-blue-700 font-bold">"{subjects.find(s => s.id === selectedSubjectId)?.name}"</strong> class today. Status: ABSENT."
+              </div>
+            </div>
+
+            {/* Quick Action Bar */}
+            {absentStudents.length > 0 && (
+              <div className="mt-3 flex items-center justify-between bg-emerald-100/60 border border-emerald-200/80 p-2.5 rounded-2xl">
+                <span className="text-xs font-bold text-emerald-900 pl-1">
+                  Ready to notify: {absentStudents.filter(s => s.parentPhone).length} / {absentStudents.length} parents
+                </span>
+                <button
+                  onClick={handleNotifyAllSequential}
+                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5 transition-all"
+                >
+                  <span>🚀</span>
+                  <span>Start Sending to All Parents</span>
+                </button>
+              </div>
+            )}
+
+            {/* Student List */}
+            <div className="overflow-y-auto mt-4 pr-1 space-y-3 flex-1">
+              {absentStudents.length === 0 ? (
+                <div className="text-center py-10 text-slate-400">
+                  <span className="text-3xl">🎉</span>
+                  <p className="font-bold text-sm text-slate-700 mt-2">All students are present!</p>
+                  <p className="text-xs text-slate-400">No absent student parents to notify for this lecture.</p>
+                </div>
+              ) : (
+                absentStudents.map((student) => {
+                  const isSent = whatsAppStatusMap[student.id] === 'sent';
+                  const hasPhone = Boolean(student.parentPhone && student.parentPhone.trim());
+                  return (
+                    <div
+                      key={student.id}
+                      className="p-3.5 border border-slate-200/80 rounded-2xl bg-white hover:bg-slate-50/60 transition-colors flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-extrabold text-slate-800 text-sm">{student.name}</span>
+                          <span className="font-mono text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded font-semibold">{student.usn}</span>
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-slate-600 mt-1">
+                          <span>👤 Parent: <strong className="font-semibold text-slate-800">{student.parentName || 'Not Set'}</strong></span>
+                          <span>•</span>
+                          <span className="font-mono">
+                            📱 {hasPhone ? student.parentPhone : <span className="text-rose-500 font-bold">No WhatsApp Registered</span>}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 sm:flex-shrink-0">
+                        {isSent ? (
+                          <span className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-50 text-emerald-700 text-xs font-bold rounded-xl border border-emerald-200">
+                            ✓ Alert Dispatched
+                          </span>
+                        ) : hasPhone ? (
+                          <button
+                            onClick={() => handleSendWhatsApp(student)}
+                            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer flex items-center gap-1.5"
+                          >
+                            <span>💬</span>
+                            <span>Send WhatsApp</span>
+                          </button>
+                        ) : (
+                          <span className="text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-xl">
+                            Add Number in Admin
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <p className="text-[11px] text-slate-400">
+                Messages include timestamp, subject, section, and attendance policy notice.
+              </p>
+              <button
+                onClick={() => setShowWhatsAppCenterModal(false)}
+                className="w-full sm:w-auto px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl cursor-pointer"
+              >
+                Close Center
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white text-xs font-bold px-4 py-3 rounded-2xl shadow-xl border border-slate-700 flex items-center gap-2 animate-bounce">
+          <span>💬</span>
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* ── Projector Fullscreen Overlay ── */}
       {showProjector && currentSession && (
         <div

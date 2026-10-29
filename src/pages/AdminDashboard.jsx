@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../AppContext';
 import { shortenHash } from '../utils';
@@ -17,7 +17,10 @@ export default function AdminDashboard() {
     deleteTeacher,
     updateTeacherAssignments,
     addStudent,
+    updateStudent,
     deleteStudent,
+    enrollStudentFace,
+    removeStudentFace,
     addSection,
     deleteSection,
     addSubject,
@@ -49,6 +52,27 @@ export default function AdminDashboard() {
   const [sEmail, setSEmail] = useState('');
   const [sPassword, setSPassword] = useState('pass');
   const [sSectionId, setSSectionId] = useState('');
+  const [sParentName, setSParentName] = useState('');
+  const [sParentPhone, setSParentPhone] = useState('');
+
+  // Form State: Edit Student Modal
+  const [showEditStudentModal, setShowEditStudentModal] = useState(false);
+  const [editingStudent, setEditingStudent] = useState(null);
+  const [editSName, setEditSName] = useState('');
+  const [editSUsn, setEditSUsn] = useState('');
+  const [editSEmail, setEditSEmail] = useState('');
+  const [editSSectionId, setEditSSectionId] = useState('');
+  const [editSParentName, setEditSParentName] = useState('');
+  const [editSParentPhone, setEditSParentPhone] = useState('');
+
+  // Face Biometric Enrollment States
+  const [showFaceEnrollModal, setShowFaceEnrollModal] = useState(false);
+  const [faceEnrollStudent, setFaceEnrollStudent] = useState(null);
+  const [faceStream, setFaceStream] = useState(null);
+  const [isCapturingFace, setIsCapturingFace] = useState(false);
+  const [faceEnrollError, setFaceEnrollError] = useState('');
+  const [faceEnrollSuccess, setFaceEnrollSuccess] = useState('');
+  const adminFaceVideoRef = useRef(null);
 
   // Form State: Section
   const [secName, setSecName] = useState('');
@@ -122,6 +146,8 @@ export default function AdminDashboard() {
       email: sEmail.trim(),
       sectionId: sSectionId,
       password: sPassword.trim() || 'pass',
+      parentName: sParentName.trim(),
+      parentPhone: sParentPhone.trim(),
     });
 
     // Reset
@@ -130,7 +156,109 @@ export default function AdminDashboard() {
     setSEmail('');
     setSPassword('pass');
     setSSectionId('');
+    setSParentName('');
+    setSParentPhone('');
     setShowStudentModal(false);
+  };
+
+  const handleOpenEditStudentModal = (student) => {
+    setEditingStudent(student);
+    setEditSName(student.name || '');
+    setEditSUsn(student.usn || '');
+    setEditSEmail(student.email || '');
+    setEditSSectionId(student.sectionId || '');
+    setEditSParentName(student.parentName || '');
+    setEditSParentPhone(student.parentPhone || '');
+    setShowEditStudentModal(true);
+  };
+
+  const handleOpenFaceEnrollModal = async (student) => {
+    setFaceEnrollStudent(student);
+    setFaceEnrollError('');
+    setFaceEnrollSuccess('');
+    setShowFaceEnrollModal(true);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
+      });
+      setFaceStream(stream);
+      setTimeout(() => {
+        if (adminFaceVideoRef.current) {
+          adminFaceVideoRef.current.srcObject = stream;
+          adminFaceVideoRef.current.play().catch(e => console.error("Video play error:", e));
+        }
+      }, 150);
+    } catch (err) {
+      console.error("Camera error:", err);
+      setFaceEnrollError("Camera permission denied. Please allow camera access in your browser to scan and enroll the student's face.");
+    }
+  };
+
+  const handleCloseFaceEnrollModal = () => {
+    if (faceStream) {
+      faceStream.getTracks().forEach(track => track.stop());
+      setFaceStream(null);
+    }
+    setShowFaceEnrollModal(false);
+    setFaceEnrollStudent(null);
+    setFaceEnrollError('');
+    setFaceEnrollSuccess('');
+  };
+
+  const handleCaptureAndEnrollFace = async () => {
+    if (!adminFaceVideoRef.current || !faceEnrollStudent) return;
+    setIsCapturingFace(true);
+    setFaceEnrollError('');
+    setFaceEnrollSuccess('');
+
+    try {
+      const video = adminFaceVideoRef.current;
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const capturedBase64 = canvas.toDataURL('image/jpeg', 0.9);
+
+      const res = await enrollStudentFace(faceEnrollStudent.id, capturedBase64);
+      setFaceEnrollSuccess("✅ Face biometric successfully enrolled & permanently saved on blockchain ledger!");
+      setTimeout(() => {
+        handleCloseFaceEnrollModal();
+      }, 1800);
+    } catch (err) {
+      console.error("Enroll error:", err);
+      setFaceEnrollError(err.message || "Failed to process face biometric. Ensure face is directly facing camera.");
+    } finally {
+      setIsCapturingFace(false);
+    }
+  };
+
+  const handleRemoveFace = async (student) => {
+    if (!window.confirm(`Are you sure you want to remove the permanent face biometric for ${student.name} (${student.usn})?\n\nThe student will not be able to log in until a new face scan is enrolled.`)) {
+      return;
+    }
+    try {
+      await removeStudentFace(student.id);
+    } catch (err) {
+      alert("Failed to remove face biometric: " + err.message);
+    }
+  };
+
+
+  const handleSaveEditStudent = (e) => {
+    e.preventDefault();
+    if (!editingStudent) return;
+    updateStudent(editingStudent.id, {
+      name: editSName.trim(),
+      usn: editSUsn.trim().toUpperCase(),
+      email: editSEmail.trim(),
+      sectionId: editSSectionId,
+      parentName: editSParentName.trim(),
+      parentPhone: editSParentPhone.trim(),
+    });
+    setShowEditStudentModal(false);
+    setEditingStudent(null);
   };
 
   const handleClearDatabase = async () => {
@@ -427,10 +555,11 @@ export default function AdminDashboard() {
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                      <th className="py-3 px-6">Name</th>
+                      <th className="py-3 px-6">Student Info</th>
                       <th className="py-3 px-6">USN</th>
-                      <th className="py-3 px-6">Email</th>
                       <th className="py-3 px-6">Section / Year</th>
+                      <th className="py-3 px-6">Parent & WhatsApp Contact</th>
+                      <th className="py-3 px-6">Face Biometric</th>
                       <th className="py-3 px-6 text-right">Actions</th>
                     </tr>
                   </thead>
@@ -438,29 +567,112 @@ export default function AdminDashboard() {
                     {students.length === 0 ? (
                       <tr>
                         <td colSpan="5" className="py-8 text-center text-slate-400 font-semibold">
-                          No students registered yet. Click "+ Register Student" to add a student.
+                          No students registered yet. Click "+ Register Student" to add a student with parent WhatsApp details.
                         </td>
                       </tr>
                     ) : (
                       students.map((student) => {
                         const sec = sections.find(s => s.id === student.sectionId);
+                        const cleanPhone = (student.parentPhone || '').replace(/[^0-9]/g, '');
+                        const waNumber = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
                         return (
-                          <tr key={student.id} className="hover:bg-slate-50/50">
-                            <td className="py-4 px-6 font-extrabold text-slate-800">{student.name}</td>
+                          <tr key={student.id} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="py-4 px-6">
+                              <div>
+                                <p className="font-extrabold text-slate-800">{student.name}</p>
+                                <p className="text-slate-400 text-xs font-mono">{student.email}</p>
+                              </div>
+                            </td>
                             <td className="py-4 px-6 font-mono text-xs font-semibold text-slate-700">{student.usn}</td>
-                            <td className="py-4 px-6 text-slate-500 text-xs font-mono">{student.email}</td>
                             <td className="py-4 px-6">
                               <span className="bg-indigo-50 text-indigo-700 border border-indigo-100 text-xs font-bold px-2.5 py-0.5 rounded-full">
                                 {sec ? `${sec.year}th Year - ${sec.name}` : 'N/A'}
                               </span>
                             </td>
+                            <td className="py-4 px-6">
+                              <div className="flex flex-col">
+                                <span className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                                  <span>👤</span>
+                                  {student.parentName || <span className="text-slate-400 italic font-normal">Parent not set</span>}
+                                </span>
+                                {student.parentPhone ? (
+                                  <a
+                                    href={`https://wa.me/${waNumber}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    title="Open WhatsApp chat with parent"
+                                    className="inline-flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 font-mono font-semibold hover:underline mt-0.5"
+                                  >
+                                    <span className="text-xs">💬</span> {student.parentPhone}
+                                  </a>
+                                ) : (
+                                  <span className="text-[10px] text-amber-500 font-medium mt-0.5">⚠️ No WhatsApp number</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-4 px-6">
+                              {student.faceRegistered ? (
+                                <div className="flex items-center gap-2.5">
+                                  {student.faceImage ? (
+                                    <img src={student.faceImage} alt="Biometric Face" className="w-10 h-10 rounded-full object-cover border-2 border-emerald-500 shadow-xs" />
+                                  ) : (
+                                    <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs border border-emerald-300">
+                                      👤
+                                    </div>
+                                  )}
+                                  <div>
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full uppercase">
+                                      ✓ Enrolled
+                                    </span>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      <button
+                                        onClick={() => handleOpenFaceEnrollModal(student)}
+                                        className="text-[10px] text-blue-600 hover:text-blue-700 font-bold hover:underline cursor-pointer"
+                                        title="Re-scan and update face biometric"
+                                      >
+                                        Re-scan
+                                      </button>
+                                      <span className="text-[10px] text-slate-300">•</span>
+                                      <button
+                                        onClick={() => handleRemoveFace(student)}
+                                        className="text-[10px] text-rose-600 hover:text-rose-700 font-bold hover:underline cursor-pointer"
+                                        title="Delete enrolled face biometric"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div>
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 px-2 py-0.5 rounded-full uppercase">
+                                    ❌ Not Enrolled
+                                  </span>
+                                  <button
+                                    onClick={() => handleOpenFaceEnrollModal(student)}
+                                    className="block mt-1 px-2.5 py-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-[11px] font-extrabold rounded-lg shadow-xs transition-all cursor-pointer"
+                                  >
+                                    📸 Enroll Face
+                                  </button>
+                                </div>
+                              )}
+                            </td>
                             <td className="py-4 px-6 text-right">
-                              <button
-                                onClick={() => deleteStudent(student.id)}
-                                className="px-2.5 py-1 border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-lg cursor-pointer"
-                              >
-                                Delete
-                              </button>
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  onClick={() => handleOpenEditStudentModal(student)}
+                                  className="px-2.5 py-1 border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-lg cursor-pointer transition-colors"
+                                  title="Edit student and parent WhatsApp contact"
+                                >
+                                  Edit Parent
+                                </button>
+                                <button
+                                  onClick={() => deleteStudent(student.id)}
+                                  className="px-2.5 py-1 border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-lg cursor-pointer transition-colors"
+                                >
+                                  Delete
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1109,6 +1321,37 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
+              {/* Parent & WhatsApp Details */}
+              <div className="p-3.5 bg-emerald-50/60 rounded-2xl border border-emerald-100 space-y-3">
+                <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-800">
+                  <span>📱</span>
+                  <span>Parent WhatsApp Notification Details</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Parent's Full Name</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Ramesh Sharma"
+                      value={sParentName}
+                      onChange={(e) => setSParentName(e.target.value)}
+                      className="block w-full rounded-xl border border-slate-300 bg-white py-1.5 px-3 text-slate-950 text-xs focus:border-emerald-500 focus:ring-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Parent's WhatsApp No.</label>
+                    <input
+                      type="tel"
+                      placeholder="e.g. +91 9876543210"
+                      value={sParentPhone}
+                      onChange={(e) => setSParentPhone(e.target.value)}
+                      className="block w-full rounded-xl border border-slate-300 bg-white py-1.5 px-3 text-slate-950 text-xs focus:border-emerald-500 focus:ring-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <p className="text-[10px] text-emerald-700/80 italic">Used by faculty to send automated WhatsApp absence notifications during lecture periods.</p>
+              </div>
+
               <div className="flex gap-3 justify-end pt-3 border-t border-slate-100 mt-2">
                 <button
                   type="button"
@@ -1122,6 +1365,221 @@ export default function AdminDashboard() {
                   className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm cursor-pointer"
                 >
                   Register Student
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      
+      
+      {/* ── Modal: Admin Face Biometric Enrollment ── */}
+      {showFaceEnrollModal && faceEnrollStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-md animate-fadeIn">
+          <div className="bg-white rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl border border-slate-200 flex flex-col p-6 relative">
+            <button
+              onClick={handleCloseFaceEnrollModal}
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold cursor-pointer"
+            >
+              ✕
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center text-xl font-bold shadow-md shadow-indigo-200">
+                👤
+              </div>
+              <div>
+                <h3 className="font-extrabold text-slate-900 text-lg">Face Biometric Registration</h3>
+                <p className="text-xs text-slate-500">
+                  Enrolling permanent face biometric for <strong className="text-slate-800">{faceEnrollStudent.name}</strong> ({faceEnrollStudent.usn})
+                </p>
+              </div>
+            </div>
+
+            {/* Camera Viewport with Biometric Overlay */}
+            <div className="mt-4 relative rounded-2xl overflow-hidden bg-slate-950 aspect-[4/3] flex items-center justify-center border-2 border-slate-800 shadow-inner">
+              <video
+                ref={adminFaceVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover transform scale-x-[-1]"
+              />
+
+              {/* Face Target Scanner Frame */}
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="w-48 h-60 border-2 border-dashed border-emerald-400/80 rounded-[50%] shadow-[0_0_20px_rgba(16,185,129,0.3)] animate-pulse flex items-center justify-center">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-300 bg-slate-900/80 px-2 py-0.5 rounded-full mt-48">
+                    Align Face Here
+                  </span>
+                </div>
+              </div>
+
+              {/* Status pill */}
+              <div className="absolute top-3 left-3 bg-slate-900/80 backdrop-blur-sm px-2.5 py-1 rounded-full text-[10px] font-bold text-white flex items-center gap-1.5 border border-white/10">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                <span>Live Camera Feed</span>
+              </div>
+            </div>
+
+            {/* Error or Success feedback */}
+            {faceEnrollError && (
+              <div className="mt-3 p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold rounded-xl animate-fadeIn">
+                ⚠️ {faceEnrollError}
+              </div>
+            )}
+            {faceEnrollSuccess && (
+              <div className="mt-3 p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold rounded-xl animate-fadeIn">
+                {faceEnrollSuccess}
+              </div>
+            )}
+
+            {/* Instruction info */}
+            <p className="text-[11px] text-slate-500 mt-3 text-center">
+              Ensure the student is facing the camera directly in clear lighting with no sunglasses or heavy face masks.
+            </p>
+
+            {/* Modal Actions */}
+            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleCloseFaceEnrollModal}
+                disabled={isCapturingFace}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCaptureAndEnrollFace}
+                disabled={isCapturingFace}
+                className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-extrabold rounded-xl shadow-md shadow-emerald-200 cursor-pointer disabled:opacity-50 flex items-center gap-2"
+              >
+                <span>📸</span>
+                <span>{isCapturingFace ? 'Processing Face...' : 'Capture & Save Biometric'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Edit Student & Parent WhatsApp ── */}
+      {showEditStudentModal && editingStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col p-6 relative max-h-[90vh]">
+            <button
+              onClick={() => {
+                setShowEditStudentModal(false);
+                setEditingStudent(null);
+              }}
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold cursor-pointer"
+            >
+              ✕
+            </button>
+
+            <h3 className="font-extrabold text-slate-900 text-lg mt-1">Edit Student & Parent Contact</h3>
+            <p className="text-xs text-slate-500 mt-1">Update parent name & WhatsApp contact for <span className="font-bold text-slate-800">{editingStudent.name}</span>.</p>
+
+            <form onSubmit={handleSaveEditStudent} className="mt-4 space-y-4 overflow-y-auto pr-1">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Student Full Name</label>
+                <input
+                  required
+                  type="text"
+                  value={editSName}
+                  onChange={(e) => setEditSName(e.target.value)}
+                  className="block w-full rounded-xl border border-slate-300 bg-white py-2 px-3 text-slate-950 text-sm focus:border-blue-500 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Student USN</label>
+                  <input
+                    required
+                    type="text"
+                    value={editSUsn}
+                    onChange={(e) => setEditSUsn(e.target.value)}
+                    className="block w-full rounded-xl border border-slate-300 bg-white py-2 px-3 text-slate-950 text-sm focus:border-blue-500 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Class Section</label>
+                  <select
+                    required
+                    value={editSSectionId}
+                    onChange={(e) => setEditSSectionId(e.target.value)}
+                    className="block w-full rounded-xl border border-slate-300 bg-white py-2 px-3 text-slate-950 text-sm focus:border-blue-500 focus:ring-blue-500 focus:outline-none"
+                  >
+                    <option value="">Choose Section...</option>
+                    {sections.map((sec) => {
+                      const yearLabel = sec.year === 1 ? '1st Yr' : sec.year === 2 ? '2nd Yr' : sec.year === 3 ? '3rd Yr' : '4th Yr';
+                      return (
+                        <option key={sec.id} value={sec.id}>{yearLabel} - {sec.name}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Email Address</label>
+                <input
+                  required
+                  type="email"
+                  value={editSEmail}
+                  onChange={(e) => setEditSEmail(e.target.value)}
+                  className="block w-full rounded-xl border border-slate-300 bg-white py-2 px-3 text-slate-950 text-sm focus:border-blue-500 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              {/* Parent & WhatsApp info */}
+              <div className="p-3.5 bg-emerald-50 rounded-2xl border border-emerald-100 space-y-3">
+                <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-800">
+                  <span>📱</span>
+                  <span>Parent WhatsApp Notification Details</span>
+                </div>
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Parent's Full Name</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Ramesh Sharma"
+                      value={editSParentName}
+                      onChange={(e) => setEditSParentName(e.target.value)}
+                      className="block w-full rounded-xl border border-slate-300 bg-white py-2 px-3 text-slate-950 text-xs focus:border-emerald-500 focus:ring-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">Parent's WhatsApp Mobile Number</label>
+                    <input
+                      type="tel"
+                      placeholder="e.g. +91 9876543210"
+                      value={editSParentPhone}
+                      onChange={(e) => setEditSParentPhone(e.target.value)}
+                      className="block w-full rounded-xl border border-slate-300 bg-white py-2 px-3 text-slate-950 text-xs focus:border-emerald-500 focus:ring-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-3 justify-end pt-3 border-t border-slate-100 mt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowEditStudentModal(false);
+                    setEditingStudent(null);
+                  }}
+                  className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-bold rounded-xl shadow-sm cursor-pointer"
+                >
+                  Save Parent Details
                 </button>
               </div>
             </form>

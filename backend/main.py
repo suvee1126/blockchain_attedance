@@ -13,7 +13,7 @@ from .database import (
     get_sections, insert_section, delete_section,
     get_subjects, insert_subject, delete_subject,
     get_teachers, insert_teacher, update_teacher_assignments, delete_teacher,
-    get_students, insert_student, delete_student,
+    get_students, insert_student, update_student, delete_student, enroll_student_face, remove_student_face,
     get_active_sessions, insert_active_session, update_active_session_students, delete_active_session,
     get_nc_records, insert_nc_record,
     get_attendance_records, insert_attendance_record
@@ -22,10 +22,11 @@ from .firebase_db import (
     get_firebase_status, is_firebase_active,
     sync_entire_database_to_firebase
 )
+from .face_engine import extract_face_biometric, compare_faces
 from .blockchain import blockchain, generate_blockchain_hash, haversine_distance
 from .models import (
     LoginRequest, RegisterRequest, SectionCreate, SubjectCreate, TeacherCreate,
-    TeacherAssignmentUpdate, StudentCreate, StartSessionRequest,
+    TeacherAssignmentUpdate, StudentCreate, StudentUpdate, WhatsAppNotificationRequest, FaceEnrollRequest, FaceLoginRequest, StartSessionRequest,
     MarkAttendanceRequest, StudentCheckInRequest, NCRecordCreate
 )
 
@@ -75,7 +76,7 @@ async def login(req: LoginRequest):
                 "success": True,
                 "user": {"id": admin["id"], "name": admin["name"], "role": "admin", "email": admin["email"]}
             }
-        elif email == "admin@blockchain.edu":
+        elif email in ["admin@blockchain.edu", "admin@summit.edu", "admin@gmail.com"]:
             if password == "admin123":
                 return {
                     "success": True,
@@ -102,7 +103,7 @@ async def login(req: LoginRequest):
 
     elif role == "student":
         students = get_students()
-        student = next((s for s in students if s["email"].lower() == email), None)
+        student = next((s for s in students if s["email"].lower() == email or (s.get("usn") and s["usn"].lower() == email)), None)
         if not student:
             raise HTTPException(status_code=404, detail=f"No student found with email '{email}'. Please check your email or Register.")
         
@@ -128,6 +129,76 @@ async def login(req: LoginRequest):
 
     raise HTTPException(status_code=400, detail="Invalid role specified. Must be 'student', 'teacher', or 'admin'.")
 
+
+
+@app.post("/api/auth/verify-face-login")
+async def verify_face_login(req: FaceLoginRequest):
+    identifier = req.emailOrUsn.strip().lower()
+    students = get_students()
+    student = next((s for s in students if s["email"].lower() == identifier or s["usn"].lower() == identifier), None)
+
+    if not student:
+        raise HTTPException(status_code=404, detail=f"No registered student found with email or USN '{req.emailOrUsn}'.")
+
+    # If student provided password, check it
+    if req.password:
+        stored_pwd = (student.get("password") or "pass").strip()
+        if stored_pwd != req.password.strip():
+            raise HTTPException(status_code=401, detail="Incorrect student password.")
+
+    if not student.get("faceRegistered") or not student.get("faceDescriptor"):
+        raise HTTPException(
+            status_code=403,
+            detail="Face biometric is not yet enrolled for your account. Only an Administrator can enroll your face in the Admin Panel."
+        )
+
+    # Perform real Deep Learning SFace biometric comparison
+    match_result = compare_faces(student["faceDescriptor"], req.imageData)
+
+    if not match_result["verified"]:
+        raise HTTPException(
+            status_code=401,
+            detail=match_result.get("error") or "Face verification failed. Captured face did not match enrolled biometric."
+        )
+
+    # Calculate subjects
+    teachers = get_teachers()
+    assigned_subjects = []
+    for t in teachers:
+        if student["sectionId"] in t.get("assignedSections", []):
+            assigned_subjects.extend(t.get("assignedSubjects", []))
+    if not assigned_subjects:
+        subjects = get_subjects()
+        assigned_subjects = [sub["id"] for sub in subjects]
+
+    # Log to blockchain ledger
+    tx_hash = generate_blockchain_hash()
+    blockchain.add_transaction({
+        "type": "STUDENT_FACE_LOGIN_VERIFIED",
+        "studentId": student["id"],
+        "usn": student["usn"],
+        "similarityPercentage": match_result["similarityPercentage"],
+        "cosineScore": match_result["cosineScore"],
+        "tx_hash": tx_hash
+    })
+
+    user_data = {
+        **student,
+        "role": "student",
+        "subjectIds": list(set(assigned_subjects))
+    }
+    # Don't send huge descriptor to client session
+    user_data.pop("faceDescriptor", None)
+
+    return {
+        "success": True,
+        "user": user_data,
+        "matchDetails": {
+            "similarityPercentage": match_result["similarityPercentage"],
+            "cosineScore": match_result["cosineScore"],
+            "tx_hash": tx_hash
+        }
+    }
 
 @app.post("/api/auth/register")
 async def register(req: RegisterRequest):
@@ -166,7 +237,7 @@ async def register(req: RegisterRequest):
         existing_ids = [s["id"] for s in all_students if isinstance(s["id"], int)]
         new_student_id = (max(existing_ids) + 1) if existing_ids else 101
 
-        insert_student(new_student_id, name, usn, email, section_id, password)
+        insert_student(new_student_id, name, usn, email, section_id, password, req.parentName or "", req.parentPhone or "")
 
         # Record to blockchain
         tx_hash = generate_blockchain_hash()
@@ -194,6 +265,8 @@ async def register(req: RegisterRequest):
             "usn": usn,
             "email": email,
             "sectionId": section_id,
+            "parentName": req.parentName or "",
+            "parentPhone": req.parentPhone or "",
             "role": "student",
             "password": password,
             "subjectIds": list(set(assigned_subjects))
@@ -426,8 +499,65 @@ async def list_students():
 async def add_student(s: StudentCreate):
     s_id = s.id or int(time.time() * 1000)
     pwd = s.password if s.password else "pass"
-    insert_student(s_id, s.name, s.usn, s.email, s.sectionId, pwd)
+    insert_student(s_id, s.name, s.usn, s.email, s.sectionId, pwd, s.parentName or "", s.parentPhone or "")
     return {"success": True, "id": s_id}
+
+@app.put("/api/students/{student_id}")
+async def update_existing_student(student_id: int, s: StudentUpdate):
+    update_student(student_id, s.name, s.usn, s.email, s.sectionId, s.parentName or "", s.parentPhone or "", s.password)
+    return {"success": True, "id": student_id}
+
+
+@app.post("/api/students/{student_id}/enroll-face")
+async def admin_enroll_face(student_id: int, req: FaceEnrollRequest):
+    students = get_students()
+    student = next((s for s in students if s["id"] == student_id), None)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    res = extract_face_biometric(req.imageData)
+    if not res["success"]:
+        raise HTTPException(status_code=400, detail=res["error"])
+
+    enrolled_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    enroll_student_face(student_id, res["featureVector"], res["thumbnail"], enrolled_at)
+
+    tx_hash = generate_blockchain_hash()
+    blockchain.add_transaction({
+        "type": "FACE_BIOMETRIC_ENROLLED",
+        "studentId": student_id,
+        "studentName": student["name"],
+        "usn": student["usn"],
+        "confidence": res.get("confidence", 1.0),
+        "tx_hash": tx_hash
+    })
+
+    return {
+        "success": True,
+        "thumbnail": res["thumbnail"],
+        "enrolledAt": enrolled_at,
+        "tx_hash": tx_hash
+    }
+
+@app.delete("/api/students/{student_id}/remove-face")
+async def admin_remove_face(student_id: int):
+    students = get_students()
+    student = next((s for s in students if s["id"] == student_id), None)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    remove_student_face(student_id)
+
+    tx_hash = generate_blockchain_hash()
+    blockchain.add_transaction({
+        "type": "FACE_BIOMETRIC_REMOVED",
+        "studentId": student_id,
+        "studentName": student["name"],
+        "usn": student["usn"],
+        "tx_hash": tx_hash
+    })
+
+    return {"success": True, "tx_hash": tx_hash}
 
 @app.delete("/api/students/{student_id}")
 async def remove_student(student_id: int):
@@ -527,6 +657,7 @@ async def check_in(req: StudentCheckInRequest):
     return {"success": True, "presentCount": len(present)}
 
 @app.post("/api/sessions/mark-student")
+@app.post("/api/sessions/mark")
 async def mark_student_attendance(req: MarkAttendanceRequest):
     active_sessions = get_active_sessions()
     session = next((s for s in active_sessions if s["id"] == req.sessionId), None)
@@ -624,6 +755,58 @@ async def create_nc(req: NCRecordCreate):
 
     return {"success": True, "record": nc_item}
 
+
+# ─── WhatsApp Notifications for Absent Students ───
+import urllib.parse
+
+@app.post("/api/notifications/whatsapp-absent")
+async def send_whatsapp_absent_notification(req: WhatsAppNotificationRequest):
+    raw_phone = "".join(filter(str.isdigit, req.parentPhone or ""))
+    if len(raw_phone) == 10:
+        formatted_phone = f"91{raw_phone}"
+    else:
+        formatted_phone = raw_phone
+
+    session_date = req.date or time.strftime("%Y-%m-%d")
+    session_time = req.periodTime or time.strftime("%I:%M %p")
+    subject_display = f"{req.subjectName} ({req.subjectCode})" if req.subjectCode else req.subjectName
+
+    parent_clean = req.parentName.strip() if req.parentName else 'Parent'
+    student_clean = req.studentName.strip()
+    usn_clean = req.usn.strip().upper()
+    sec_clean = req.sectionName or 'Enrolled Section'
+    message_text = (
+        f'🔔 *ATTENDANCE ALERT - ABSENCE NOTIFICATION*\n\n'
+        f'Dear *{parent_clean}*,\n\n'
+        f'Your student *{student_clean}* (USN: *{usn_clean}*) was absent for *"{subject_display}"* class today ({session_date} at {session_time}).\n\n'
+        f'🏛️ *Section:* {sec_clean}\n'
+        f'❌ *Status:* ABSENT\n\n'
+        f'⚠️ Regular attendance is compulsory for academic eligibility. Please ensure your ward attends all scheduled lectures.\n\n'
+        f'- *Faculty / Academic Department*'
+    )
+    whatsapp_url = f"https://wa.me/{formatted_phone}?text={urllib.parse.quote(message_text)}" if formatted_phone else ""
+
+    tx_hash = generate_blockchain_hash()
+    blockchain.add_transaction({
+        "type": "WHATSAPP_ABSENT_ALERT",
+        "studentId": req.studentId,
+        "studentName": req.studentName,
+        "parentName": req.parentName,
+        "parentPhone": req.parentPhone,
+        "subject": req.subjectName,
+        "date": session_date,
+        "time": session_time,
+        "tx_hash": tx_hash
+    })
+
+    return {
+        "success": True,
+        "whatsappUrl": whatsapp_url,
+        "formattedPhone": formatted_phone,
+        "message": message_text,
+        "tx_hash": tx_hash
+    }
+
 # ─── Blockchain Ledger Endpoints ───
 
 @app.get("/api/blockchain/chain")
@@ -652,5 +835,14 @@ if os.path.exists(DIST_DIR):
     async def serve_spa(full_path: str):
         file_path = os.path.join(DIST_DIR, full_path)
         if os.path.exists(file_path) and not os.path.isdir(file_path):
-            return FileResponse(file_path)
-        return FileResponse(os.path.join(DIST_DIR, "index.html"))
+            resp = FileResponse(file_path)
+            if file_path.endswith(".html"):
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                resp.headers["Pragma"] = "no-cache"
+                resp.headers["Expires"] = "0"
+            return resp
+        resp = FileResponse(os.path.join(DIST_DIR, "index.html"))
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp

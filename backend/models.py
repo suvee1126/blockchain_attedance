@@ -16,6 +16,8 @@ class RegisterRequest(BaseModel):
     department: Optional[str] = "Computer Science"
     assignedSubjects: Optional[List[str]] = []
     assignedSections: Optional[List[str]] = []
+    parentName: Optional[str] = ""
+    parentPhone: Optional[str] = ""
 
 class SectionCreate(BaseModel):
     id: Optional[str] = None
@@ -47,6 +49,29 @@ class StudentCreate(BaseModel):
     email: str
     sectionId: str
     password: Optional[str] = "pass"
+    parentName: Optional[str] = ""
+    parentPhone: Optional[str] = ""
+
+class StudentUpdate(BaseModel):
+    name: str
+    usn: str
+    email: str
+    sectionId: str
+    password: Optional[str] = None
+    parentName: Optional[str] = ""
+    parentPhone: Optional[str] = ""
+
+class WhatsAppNotificationRequest(BaseModel):
+    studentId: int
+    parentName: str
+    parentPhone: str
+    studentName: str
+    usn: str
+    subjectName: str
+    subjectCode: Optional[str] = ""
+    sectionName: Optional[str] = ""
+    date: Optional[str] = ""
+    periodTime: Optional[str] = ""
 
 class StartSessionRequest(BaseModel):
     teacherId: str
@@ -72,3 +97,12 @@ class NCRecordCreate(BaseModel):
     subjectId: str
     reason: str
     date: Optional[str] = None
+
+class FaceEnrollRequest(BaseModel):
+    studentId: int
+    imageData: str
+
+class FaceLoginRequest(BaseModel):
+    emailOrUsn: str
+    password: Optional[str] = ""
+    imageData: str

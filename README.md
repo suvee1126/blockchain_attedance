@@ -73,4 +73,3 @@ Smart Attendance/
 ├── requirements.txt      # Python dependencies
 └── smart_attendance.db   # SQLite Database
 ```
->>>>>>> 5d34ea0 (Implement real database authentication, registration, Firebase Firestore sync, and blockchain ledger)

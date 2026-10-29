@@ -13,11 +13,31 @@ const API_BASE = typeof window !== 'undefined' && window.location.port === '5173
   : '';
 
 export function AppProvider({ children }) {
-  // Initialize states to be loaded dynamically from Python Backend / Supabase
-  const [students, setStudents] = useState([]);
-  const [teachers, setTeachers] = useState([]);
-  const [subjects, setSubjects] = useState([]);
-  const [sections, setSections] = useState([]);
+  // Initialize states with local cached data so reload never blanks out the screen
+  const [students, setStudents] = useState(() => {
+    try {
+      const c = localStorage.getItem('sa_cached_students');
+      return c ? JSON.parse(c) : [];
+    } catch { return []; }
+  });
+  const [teachers, setTeachers] = useState(() => {
+    try {
+      const c = localStorage.getItem('sa_cached_teachers');
+      return c ? JSON.parse(c) : [];
+    } catch { return []; }
+  });
+  const [subjects, setSubjects] = useState(() => {
+    try {
+      const c = localStorage.getItem('sa_cached_subjects');
+      return c ? JSON.parse(c) : [];
+    } catch { return []; }
+  });
+  const [sections, setSections] = useState(() => {
+    try {
+      const c = localStorage.getItem('sa_cached_sections');
+      return c ? JSON.parse(c) : [];
+    } catch { return []; }
+  });
   const [currentUser, setCurrentUser] = useState(null);
   const [attendanceRecords, setAttendanceRecords] = useState({});
   const [activeSessions, setActiveSessions] = useState([]);
@@ -31,10 +51,22 @@ export function AppProvider({ children }) {
       const res = await fetch(`${API_BASE}/api/system/data`);
       if (res.ok) {
         const pyData = await res.json();
-        if (pyData.sections) setSections(pyData.sections);
-        if (pyData.subjects) setSubjects(pyData.subjects);
-        if (pyData.teachers) setTeachers(pyData.teachers);
-        if (pyData.students) setStudents(pyData.students);
+        if (pyData.sections && pyData.sections.length > 0) {
+          setSections(pyData.sections);
+          localStorage.setItem('sa_cached_sections', JSON.stringify(pyData.sections));
+        }
+        if (pyData.subjects && pyData.subjects.length > 0) {
+          setSubjects(pyData.subjects);
+          localStorage.setItem('sa_cached_subjects', JSON.stringify(pyData.subjects));
+        }
+        if (pyData.teachers && pyData.teachers.length > 0) {
+          setTeachers(pyData.teachers);
+          localStorage.setItem('sa_cached_teachers', JSON.stringify(pyData.teachers));
+        }
+        if (pyData.students && pyData.students.length > 0) {
+          setStudents(pyData.students);
+          localStorage.setItem('sa_cached_students', JSON.stringify(pyData.students));
+        }
         if (pyData.activeSessions) setActiveSessions(pyData.activeSessions);
         if (pyData.ncRecords) setNcRecords(pyData.ncRecords);
         if (pyData.attendanceRecords) setAttendanceRecords(pyData.attendanceRecords);
@@ -42,10 +74,10 @@ export function AppProvider({ children }) {
         return pyData;
       }
     } catch (e) {
-      console.warn("Python backend fetch /api/system/data failed, falling back to Supabase/local:", e);
+      console.warn("Python backend fetch /api/system/data failed, falling back to cached state/Supabase:", e);
     }
 
-    // Supabase fallback
+    // Supabase fallback only if online
     try {
       const [
         { data: secData, error: secErr },
@@ -63,14 +95,10 @@ export function AppProvider({ children }) {
         supabase.from('nc_records').select('*')
       ]);
 
-      if (secErr) console.error("Error fetching sections:", secErr.message);
-      else if (secData) setSections(secData);
+      if (!secErr && secData && secData.length > 0) setSections(secData);
+      if (!subErr && subData && subData.length > 0) setSubjects(subData);
 
-      if (subErr) console.error("Error fetching subjects:", subErr.message);
-      else if (subData) setSubjects(subData);
-
-      if (teachErr) console.error("Error fetching teachers:", teachErr.message);
-      else if (teachData) {
+      if (!teachErr && teachData && teachData.length > 0) {
         const mappedTeachers = teachData.map(t => ({
           id: t.id,
           name: t.name,
@@ -83,21 +111,23 @@ export function AppProvider({ children }) {
         setTeachers(mappedTeachers);
       }
 
-      if (studErr) console.error("Error fetching students:", studErr.message);
-      else if (studData) {
+      if (!studErr && studData && studData.length > 0) {
         const mappedStudents = studData.map(s => ({
           id: Number(s.id),
           name: s.name,
           usn: s.usn,
           email: s.email,
           sectionId: s.section_id,
-          password: s.password || 'pass'
+          password: s.password || 'pass',
+          parentName: s.parent_name || s.parentName || '',
+          parentPhone: s.parent_phone || s.parentPhone || '',
+          faceRegistered: Boolean(s.face_registered),
+          faceImage: s.face_image || '',
         }));
         setStudents(mappedStudents);
       }
 
-      if (sessErr) console.error("Error fetching sessions:", sessErr.message);
-      else if (sessData) {
+      if (!sessErr && sessData && sessData.length > 0) {
         const mappedSessions = sessData.map(s => ({
           id: s.id,
           teacherId: s.teacher_id,
@@ -113,8 +143,7 @@ export function AppProvider({ children }) {
         setActiveSessions(mappedSessions);
       }
 
-      if (ncErr) console.error("Error fetching NC records:", ncErr.message);
-      else if (ncData) {
+      if (!ncErr && ncData && ncData.length > 0) {
         const mappedNc = ncData.map(n => ({
           id: n.id,
           teacherId: n.teacher_id,
@@ -127,7 +156,7 @@ export function AppProvider({ children }) {
         setNcRecords(mappedNc);
       }
     } catch (err) {
-      console.error("Failed to load system data from Supabase:", err);
+      console.warn("Supabase load skipped:", err.message);
     }
   }, []);
 
@@ -158,37 +187,34 @@ export function AppProvider({ children }) {
         if (error || !data || data.length === 0) return;
 
         const reconstructed = {};
-        data.forEach(r => {
-          const student = students.find(s => s.usn.toLowerCase() === r.usn.toLowerCase());
-          if (!student) return;
-
-          const subject = subjects.find(s => s.code.toLowerCase() === r.subject.toLowerCase() || s.name.toLowerCase() === r.subject.toLowerCase());
-          if (!subject) return;
-
-          const studentId = student.id;
-          const subjectId = subject.id;
-
-          if (!reconstructed[studentId]) reconstructed[studentId] = {};
-          if (!reconstructed[studentId][subjectId]) {
-            reconstructed[studentId][subjectId] = {
+        students.forEach(s => {
+          reconstructed[s.id] = {};
+          subjects.forEach(sub => {
+            reconstructed[s.id][sub.id] = {
               records: [],
               totalClasses: 0,
               presentCount: 0,
               absentCount: 0,
               percentage: 0
             };
-          }
-
-          reconstructed[studentId][subjectId].records.push({
-            id: r.id,
-            date: `${r.date}T${r.time || '12:00:00'}`,
-            status: r.status,
-            hash: r.blockchain_hash,
-            verified: r.verified,
-            lat: r.location_lat,
-            lng: r.location_lng,
-            reason: r.reason || ''
           });
+        });
+
+        data.forEach(row => {
+          const sId = Number(row.student_id);
+          const subObj = subjects.find(s => s.code === row.subject || s.id === row.subject);
+          const subId = subObj ? subObj.id : row.subject;
+
+          if (reconstructed[sId] && reconstructed[sId][subId]) {
+            reconstructed[sId][subId].records.push({
+              date: row.date,
+              time: row.time,
+              status: row.status,
+              txHash: row.blockchain_hash,
+              verified: Boolean(row.verified),
+              reason: row.reason || ''
+            });
+          }
         });
 
         Object.keys(reconstructed).forEach(studentId => {
@@ -206,7 +232,7 @@ export function AppProvider({ children }) {
 
         setAttendanceRecords(reconstructed);
       } catch (err) {
-        console.error("Failed to load records from Supabase:", err);
+        console.warn("Supabase record fetch skipped:", err.message);
       }
     };
 
@@ -245,8 +271,8 @@ export function AppProvider({ children }) {
 
     // 2. Offline / local fallback if backend server is unreachable
     if (role === 'student') {
-      const student = students.find(s => s.email.toLowerCase() === searchEmail);
-      if (!student) throw new Error(`No student found with email '${email}'. Please contact Administrator or Register.`);
+      const student = students.find(s => s.email.toLowerCase() === searchEmail || (s.usn && s.usn.toLowerCase() === searchEmail));
+      if (!student) throw new Error(`No student found with email or USN '${email}'. Please contact Administrator or Register.`);
       if (student.password && student.password !== pwd) {
         throw new Error("Incorrect password for this student account.");
       }
@@ -263,31 +289,37 @@ export function AppProvider({ children }) {
       const user = { ...student, role: 'student', subjectIds: uniqueSubjectIds };
       setCurrentUser(user);
       return user;
-    } else if (role === 'teacher') {
+    }
+
+    if (role === 'teacher') {
       const teacher = teachers.find(t => t.email.toLowerCase() === searchEmail);
-      if (!teacher) throw new Error(`No teacher found with email '${email}'. Please contact Administrator.`);
+      if (!teacher) throw new Error(`No teacher found with email '${email}'.`);
       if (teacher.password && teacher.password !== pwd) {
         throw new Error("Incorrect password for this teacher account.");
       }
       const user = { ...teacher, role: 'teacher' };
       setCurrentUser(user);
       return user;
-    } else {
-      if (searchEmail === 'admin@blockchain.edu' && pwd !== 'admin123') {
-        throw new Error("Incorrect administrator password.");
-      }
-      const user = { id: 'admin', name: 'Administrator', role: 'admin', email: searchEmail };
-      setCurrentUser(user);
-      return user;
     }
+
+    if (role === 'admin') {
+      if (['admin@summit.edu', 'admin@gmail.com', 'admin@blockchain.edu'].includes(searchEmail) && pwd === 'admin123') {
+        const user = { id: 'admin_1', name: 'System Administrator', role: 'admin', email: searchEmail };
+        setCurrentUser(user);
+        return user;
+      }
+      throw new Error("Invalid admin credentials. Use admin@gmail.com / admin123");
+    }
+
+    throw new Error('Invalid user role.');
   }, [students, teachers, attendanceRecords, fetchSystemData]);
 
-  const register = useCallback(async (formData) => {
+  const register = useCallback(async (role, userData) => {
     try {
       const res = await fetch(`${API_BASE}/api/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData)
+        body: JSON.stringify({ role, userData })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -352,7 +384,7 @@ export function AppProvider({ children }) {
       assigned_sections: teacher.assignedSections || [],
       password: teacher.password || 'pass'
     }]).then(({ error }) => {
-      if (error) console.error("Error inserting teacher to Supabase:", error.message);
+      if (error) console.warn("Supabase insert teacher skipped:", error.message);
     });
   }, []);
 
@@ -362,35 +394,55 @@ export function AppProvider({ children }) {
     fetch(`${API_BASE}/api/teachers/${id}`, { method: 'DELETE' }).catch(e => console.error("Python deleteTeacher error:", e));
 
     supabase.from('teachers').delete().eq('id', id).then(({ error }) => {
-      if (error) console.error("Error deleting teacher:", error.message);
+      if (error) console.warn("Supabase delete teacher skipped:", error.message);
     });
   }, []);
 
   const updateTeacherAssignments = useCallback((teacherId, assignedSubjects, assignedSections) => {
-    setTeachers(prev => prev.map(t =>
-      t.id === teacherId ? { ...t, assignedSubjects, assignedSections } : t
-    ));
+    setTeachers(prev =>
+      prev.map(t => (t.id === teacherId ? { ...t, assignedSubjects, assignedSections } : t))
+    );
 
     fetch(`${API_BASE}/api/teachers/${teacherId}/assignments`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assignedSubjects, assignedSections })
-    }).catch(e => console.error("Python updateTeacherAssignments error:", e));
+    }).catch(e => console.error("Python update assignments error:", e));
 
     supabase.from('teachers').update({
       assigned_subjects: assignedSubjects,
       assigned_sections: assignedSections
     }).eq('id', teacherId).then(({ error }) => {
-      if (error) console.error("Error updating teacher assignments:", error.message);
+      if (error) console.warn("Supabase update teacher skipped:", error.message);
     });
   }, []);
 
   // ─── Admin: Manage Students ───
   const addStudent = useCallback((student) => {
     const newId = Date.now();
-    const newStudent = { ...student, id: newId };
+    const newStudent = { 
+      ...student, 
+      id: newId,
+      faceRegistered: false,
+      faceDescriptor: [],
+      faceImage: '',
+      parentName: student.parentName || '',
+      parentPhone: student.parentPhone || ''
+    };
     setStudents(prev => [...prev, newStudent]);
 
+    // Initialize attendance records for the new student
+    const studentSubjectIds = teachers
+      .filter(t => t.assignedSections.includes(student.sectionId))
+      .flatMap(t => t.assignedSubjects);
+    const uniqueSubjectIds = [...new Set(studentSubjectIds)];
+
+    setAttendanceRecords(prev => ({
+      ...prev,
+      [newId]: generateSubjectAttendance(newId, uniqueSubjectIds),
+    }));
+
+    // Send to Python SQLite API
     fetch(`${API_BASE}/api/students`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -400,30 +452,167 @@ export function AppProvider({ children }) {
         usn: student.usn,
         email: student.email,
         sectionId: student.sectionId,
-        password: student.password || 'pass'
+        password: student.password || 'pass',
+        parentName: student.parentName || '',
+        parentPhone: student.parentPhone || ''
       })
     }).catch(e => console.error("Python addStudent error:", e));
 
+    // Supabase sync
     supabase.from('students').insert([{
       id: newId,
       name: student.name,
       usn: student.usn,
       email: student.email,
       section_id: student.sectionId,
-      password: student.password || 'pass'
+      password: student.password || 'pass',
+      parent_name: student.parentName || '',
+      parent_phone: student.parentPhone || ''
     }]).then(({ error }) => {
-      if (error) console.error("Error inserting student:", error.message);
+      if (error) console.warn("Supabase insert student skipped:", error.message);
+    });
+  }, [teachers]);
+
+  const updateStudent = useCallback((studentId, updatedData) => {
+    setStudents(prev =>
+      prev.map(s => (s.id === studentId ? { ...s, ...updatedData } : s))
+    );
+
+    fetch(`${API_BASE}/api/students/${studentId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: studentId,
+        name: updatedData.name,
+        usn: updatedData.usn,
+        email: updatedData.email,
+        sectionId: updatedData.sectionId,
+        password: updatedData.password || undefined,
+        parentName: updatedData.parentName || '',
+        parentPhone: updatedData.parentPhone || ''
+      })
+    }).catch(e => console.error("Python updateStudent error:", e));
+
+    supabase.from('students').update({
+      name: updatedData.name,
+      usn: updatedData.usn,
+      email: updatedData.email,
+      section_id: updatedData.sectionId,
+      parent_name: updatedData.parentName || '',
+      parent_phone: updatedData.parentPhone || ''
+    }).eq('id', studentId).then(({ error }) => {
+      if (error) console.warn("Supabase update student skipped:", error.message);
     });
   }, []);
 
   const deleteStudent = useCallback((id) => {
     setStudents(prev => prev.filter(s => s.id !== id));
+    setAttendanceRecords(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
 
     fetch(`${API_BASE}/api/students/${id}`, { method: 'DELETE' }).catch(e => console.error("Python deleteStudent error:", e));
 
     supabase.from('students').delete().eq('id', id).then(({ error }) => {
-      if (error) console.error("Error deleting student:", error.message);
+      if (error) console.warn("Supabase delete student skipped:", error.message);
     });
+  }, []);
+
+  // ─── Face Biometrics Management ───
+  const enrollStudentFace = useCallback(async (studentId, imageData) => {
+    const res = await fetch(`${API_BASE}/api/students/${studentId}/enroll-face`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageData })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Failed to enroll face biometric.');
+    }
+
+    setStudents(prev => prev.map(s => {
+      if (s.id === studentId) {
+        return {
+          ...s,
+          faceRegistered: true,
+          faceImage: data.thumbnail || s.faceImage,
+          faceEnrolledAt: data.enrolledAt
+        };
+      }
+      return s;
+    }));
+
+    return data;
+  }, []);
+
+  const removeStudentFace = useCallback(async (studentId) => {
+    const res = await fetch(`${API_BASE}/api/students/${studentId}/remove-face`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Failed to remove face biometric.');
+    }
+
+    setStudents(prev => prev.map(s => {
+      if (s.id === studentId) {
+        return {
+          ...s,
+          faceRegistered: false,
+          faceDescriptor: [],
+          faceImage: '',
+          faceEnrolledAt: ''
+        };
+      }
+      return s;
+    }));
+
+    return data;
+  }, []);
+
+  const verifyFaceLogin = useCallback(async (emailOrUsn, password, imageData) => {
+    const res = await fetch(`${API_BASE}/api/auth/verify-face-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emailOrUsn, password: password || '', imageData })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Face verification failed.');
+    }
+
+    if (data.success && data.user) {
+      setCurrentUser(data.user);
+      fetchSystemData();
+      return data;
+    }
+    throw new Error('Face login response invalid.');
+  }, [fetchSystemData]);
+
+  // ─── WhatsApp Absentee Notification ───
+  const sendWhatsAppAbsentAlert = useCallback(async ({ studentId, parentPhone, parentName, studentName, subjectName, date, time }) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/notifications/whatsapp-absent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          parentPhone,
+          parentName,
+          studentName,
+          subjectName,
+          date,
+          time
+        })
+      });
+      const data = await res.json();
+      return data;
+    } catch (err) {
+      console.error("WhatsApp notification dispatch error:", err);
+      throw err;
+    }
   }, []);
 
   // ─── Admin: Manage Sections ───
@@ -438,22 +627,16 @@ export function AppProvider({ children }) {
       body: JSON.stringify({ id: newId, name: section.name, year: section.year })
     }).catch(e => console.error("Python addSection error:", e));
 
-    supabase.from('sections').insert([{
-      id: newId,
-      name: section.name,
-      year: section.year
-    }]).then(({ error }) => {
-      if (error) console.error("Error inserting section:", error.message);
+    supabase.from('sections').insert([{ id: newId, name: section.name, year: section.year }]).then(({ error }) => {
+      if (error) console.warn("Supabase insert section skipped:", error.message);
     });
   }, []);
 
   const deleteSection = useCallback((id) => {
     setSections(prev => prev.filter(s => s.id !== id));
-
     fetch(`${API_BASE}/api/sections/${id}`, { method: 'DELETE' }).catch(e => console.error("Python deleteSection error:", e));
-
     supabase.from('sections').delete().eq('id', id).then(({ error }) => {
-      if (error) console.error("Error deleting section:", error.message);
+      if (error) console.warn("Supabase delete section skipped:", error.message);
     });
   }, []);
 
@@ -466,368 +649,194 @@ export function AppProvider({ children }) {
     fetch(`${API_BASE}/api/subjects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: newId, code: subject.code, name: subject.name })
+      body: JSON.stringify({ id: newId, name: subject.name, code: subject.code })
     }).catch(e => console.error("Python addSubject error:", e));
 
-    supabase.from('subjects').insert([{
-      id: newId,
-      name: subject.name,
-      code: subject.code
-    }]).then(({ error }) => {
-      if (error) console.error("Error inserting subject:", error.message);
+    supabase.from('subjects').insert([{ id: newId, name: subject.name, code: subject.code }]).then(({ error }) => {
+      if (error) console.warn("Supabase insert subject skipped:", error.message);
     });
   }, []);
 
   const deleteSubject = useCallback((id) => {
     setSubjects(prev => prev.filter(s => s.id !== id));
-
     fetch(`${API_BASE}/api/subjects/${id}`, { method: 'DELETE' }).catch(e => console.error("Python deleteSubject error:", e));
-
     supabase.from('subjects').delete().eq('id', id).then(({ error }) => {
-      if (error) console.error("Error deleting subject:", error.message);
+      if (error) console.warn("Supabase delete subject skipped:", error.message);
     });
   }, []);
 
-  // ─── Teacher: Start Session ───
-  const startSession = useCallback((teacherId, subjectId, sectionId, timerMinutes, lat = 0, lng = 0) => {
-    const newId = `sess-${Date.now()}`;
-    const session = {
-      id: newId,
+  // ─── Teacher: Sessions ───
+  const startSession = useCallback((teacherId, subjectId, sectionId, timerMinutes, teacherLat, teacherLng) => {
+    const sessionId = `sess-${Date.now()}`;
+    const hash = generateBlockchainHash();
+    const newSession = {
+      id: sessionId,
       teacherId,
       subjectId,
       sectionId,
-      timerMinutes,
+      timerMinutes: timerMinutes || 2,
       startedAt: new Date().toISOString(),
       presentStudents: [],
-      hash: generateBlockchainHash(),
-      teacherLat: lat,
-      teacherLng: lng,
+      hash,
+      teacherLat: teacherLat || 12.9786,
+      teacherLng: teacherLng || 77.3640
     };
-    setActiveSessions(prev => [...prev, session]);
 
-    fetch(`${API_BASE}/api/sessions/start`, {
+    setActiveSessions(prev => [newSession, ...prev]);
+
+    fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teacherId, subjectId, sectionId, timerMinutes, lat, lng })
+      body: JSON.stringify(newSession)
     }).catch(e => console.error("Python startSession error:", e));
 
-    supabase.from('active_sessions').insert([{
-      id: newId,
-      teacher_id: teacherId,
-      subject_id: subjectId,
-      section_id: sectionId,
-      timer_minutes: timerMinutes,
-      started_at: session.startedAt,
-      present_students: [],
-      hash: session.hash,
-      teacher_lat: lat,
-      teacher_lng: lng
-    }]).then(({ error }) => {
-      if (error) console.error("Error inserting active session:", error.message);
-    });
-
-    return session;
+    return sessionId;
   }, []);
 
   const endSession = useCallback((sessionId) => {
+    const session = activeSessions.find(s => s.id === sessionId);
+    if (!session) return;
+
+    const sectionStudents = students.filter(st => st.sectionId === session.sectionId);
+    const dateStr = new Date().toISOString().split('T')[0];
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+
+    sectionStudents.forEach(student => {
+      const isPresent = session.presentStudents.includes(student.id);
+      const txHash = generateBlockchainHash();
+
+      fetch(`${API_BASE}/api/attendance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: student.id,
+          studentName: student.name,
+          usn: student.usn,
+          subject: subjects.find(s => s.id === session.subjectId)?.code || session.subjectId,
+          date: dateStr,
+          time: timeStr,
+          status: isPresent ? 'Present' : 'Absent',
+          blockchainHash: txHash,
+          locationLat: session.teacherLat,
+          locationLng: session.teacherLng,
+          verified: isPresent
+        })
+      }).catch(e => console.error("Python mark attendance error:", e));
+    });
+
+    fetch(`${API_BASE}/api/sessions/${sessionId}/end`, { method: 'POST' }).catch(e => console.error("Python endSession error:", e));
+
     setActiveSessions(prev => prev.filter(s => s.id !== sessionId));
-
-    fetch(`${API_BASE}/api/sessions/end/${sessionId}`, { method: 'POST' }).catch(e => console.error("Python endSession error:", e));
-
-    supabase.from('active_sessions').delete().eq('id', sessionId).then(({ error }) => {
-      if (error) console.error("Error ending active session:", error.message);
-    });
-  }, []);
-
-  // ─── Teacher: Mark Attendance (simulated student scan) ───
-  const markAttendance = useCallback((sessionId, studentId) => {
-    const hash = generateBlockchainHash();
-    setActiveSessions(prev => prev.map(s => {
-      if (s.id === sessionId && !s.presentStudents.find(p => p.studentId === studentId)) {
-        const updatedPresent = [...s.presentStudents, {
-          studentId,
-          markedAt: new Date().toISOString(),
-          hash,
-        }];
-
-        supabase.from('active_sessions').update({
-          present_students: updatedPresent
-        }).eq('id', sessionId).then(({ error }) => {
-          if (error) console.error("Error updating active session present students:", error.message);
-        });
-
-        return {
-          ...s,
-          presentStudents: updatedPresent,
-        };
-      }
-      return s;
-    }));
-
-    // Post to Python API
-    fetch(`${API_BASE}/api/sessions/mark`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, studentId })
-    }).catch(e => console.error("Python markAttendance error:", e));
-
-    // Update student's attendance records
-    setAttendanceRecords(prev => {
-      const session = activeSessions.find(s => s.id === sessionId);
-      if (!session) return prev;
-      const subId = session.subjectId;
-      const studentAtt = prev[studentId] || {};
-      const subAtt = studentAtt[subId] || { records: [], totalClasses: 0, presentCount: 0, absentCount: 0, percentage: 0 };
-      const newRecord = {
-        id: `att-${studentId}-${subId}-${Date.now()}`,
-        date: new Date().toISOString(),
-        status: 'Present',
-        hash,
-        verified: true,
-      };
-      const newRecords = [...subAtt.records, newRecord];
-      const present = newRecords.filter(r => r.status === 'Present').length;
-      
-      const studentObj = students.find(s => s.id === studentId);
-      const subjectObj = subjects.find(s => s.id === subId);
-      if (studentObj && subjectObj) {
-        const now = new Date();
-        supabase.from('attendance_records').insert([{
-          student_name: studentObj.name,
-          usn: studentObj.usn,
-          subject: subjectObj.code,
-          date: now.toISOString().split('T')[0],
-          time: now.toTimeString().split(' ')[0],
-          status: 'Present',
-          blockchain_hash: hash,
-          location_lat: session.teacherLat || 0,
-          location_lng: session.teacherLng || 0,
-          verified: true
-        }]).then(({ error }) => {
-          if (error) console.error("Error inserting to Supabase:", error);
-        });
-      }
-
-      return {
-        ...prev,
-        [studentId]: {
-          ...studentAtt,
-          [subId]: {
-            records: newRecords,
-            totalClasses: newRecords.length,
-            presentCount: present,
-            absentCount: newRecords.length - present,
-            percentage: Math.round((present / newRecords.length) * 100),
-          },
-        },
-      };
-    });
-
-    return hash;
   }, [activeSessions, students, subjects]);
 
-  // ─── Student: Mark own attendance ───
-  const studentMarkAttendance = useCallback((studentId, subjectId) => {
-    const hash = generateBlockchainHash();
-    
-    // Post to Python API
-    fetch(`${API_BASE}/api/students/check-in`, {
+  const markAttendance = useCallback((sessionId, studentId) => {
+    const txHash = generateBlockchainHash();
+    setActiveSessions(prev =>
+      prev.map(s => {
+        if (s.id === sessionId && !s.presentStudents.includes(studentId)) {
+          return { ...s, presentStudents: [...s.presentStudents, studentId] };
+        }
+        return s;
+      })
+    );
+
+    fetch(`${API_BASE}/api/sessions/${sessionId}/mark`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ studentId, subjectId, lat: 0, lng: 0 })
-    }).catch(e => console.error("Python studentCheckIn error:", e));
+      body: JSON.stringify({ studentId, txHash })
+    }).catch(e => console.error("Python mark error:", e));
 
-    setAttendanceRecords(prev => {
-      const studentAtt = prev[studentId] || {};
-      const subAtt = studentAtt[subjectId] || { records: [], totalClasses: 0, presentCount: 0, absentCount: 0, percentage: 0 };
-      const newRecord = {
-        id: `att-${studentId}-${subjectId}-${Date.now()}`,
-        date: new Date().toISOString(),
-        status: 'Present',
-        hash,
-        verified: true,
-      };
-      const newRecords = [...subAtt.records, newRecord];
-      const present = newRecords.filter(r => r.status === 'Present').length;
+    return txHash;
+  }, []);
 
-      const studentObj = students.find(s => s.id === studentId);
-      const subjectObj = subjects.find(s => s.id === subjectId);
-      if (studentObj && subjectObj) {
-        const now = new Date();
-        supabase.from('attendance_records').insert([{
-          student_name: studentObj.name,
-          usn: studentObj.usn,
-          subject: subjectObj.code,
-          date: now.toISOString().split('T')[0],
-          time: now.toTimeString().split(' ')[0],
-          status: 'Present',
-          blockchain_hash: hash,
-          location_lat: 0,
-          location_lng: 0,
-          verified: true
-        }]).then(({ error }) => {
-          if (error) console.error("Error inserting student check-in:", error);
-        });
-      }
-
-      const activeSess = activeSessions.find(s => s.subjectId === subjectId && s.sectionId === studentObj?.sectionId);
-      if (activeSess) {
-        const updatedPresent = [...activeSess.presentStudents, {
-          studentId,
-          markedAt: new Date().toISOString(),
-          hash,
-        }];
-        supabase.from('active_sessions').update({
-          present_students: updatedPresent
-        }).eq('id', activeSess.id).then(({ error }) => {
-          if (error) console.error("Error updating active session present students via student check-in:", error.message);
-        });
-
-        setActiveSessions(prev => prev.map(s => {
-          if (s.id === activeSess.id) {
-            return { ...s, presentStudents: updatedPresent };
-          }
-          return s;
-        }));
-      }
-
-      return {
-        ...prev,
-        [studentId]: {
-          ...studentAtt,
-          [subjectId]: {
-            records: newRecords,
-            totalClasses: newRecords.length,
-            presentCount: present,
-            absentCount: newRecords.length - present,
-            percentage: Math.round((present / newRecords.length) * 100),
-          },
-        },
-      };
-    });
-    return hash;
-  }, [students, subjects, activeSessions]);
-
-  // ─── Teacher: Mark NC (Not Coming / absent with reason) ───
-  const markNC = useCallback((teacherId, studentId, subjectId, reason, customDate) => {
-    const targetDate = customDate ? new Date(customDate) : new Date();
-    const newId = `nc-${Date.now()}`;
-    const record = {
-      id: newId,
+  const markNC = useCallback((teacherId, studentId, subjectId, reason) => {
+    const id = `nc-${Date.now()}`;
+    const hash = generateBlockchainHash();
+    const newNC = {
+      id,
       teacherId,
       studentId,
       subjectId,
       reason,
-      date: targetDate.toISOString(),
-      hash: generateBlockchainHash(),
+      date: new Date().toISOString().split('T')[0],
+      hash,
     };
-    setNcRecords(prev => [...prev, record]);
+    setNcRecords(prev => [newNC, ...prev]);
 
-    // Send to Python API
-    fetch(`${API_BASE}/api/nc-records`, {
+    fetch(`${API_BASE}/api/nc`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        teacherId,
-        studentId,
-        subjectId,
-        reason,
-        date: record.date
-      })
+      body: JSON.stringify(newNC)
     }).catch(e => console.error("Python markNC error:", e));
 
-    supabase.from('nc_records').insert([{
-      id: newId,
-      teacher_id: teacherId,
-      student_id: studentId,
-      subject_id: subjectId,
-      reason,
-      date: record.date,
-      hash: record.hash
-    }]).then(({ error }) => {
-      if (error) console.error("Error inserting NC record:", error.message);
-    });
+    return id;
+  }, []);
 
-    // Mark as absent/NC in attendance
+  const studentMarkAttendance = useCallback((studentId, subjectId) => {
+    const hash = generateBlockchainHash();
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0];
+    const timeStr = now.toLocaleTimeString('en-US', { hour12: false });
+
     setAttendanceRecords(prev => {
-      const studentAtt = prev[studentId] || {};
-      const subAtt = studentAtt[subjectId] || { records: [], totalClasses: 0, presentCount: 0, absentCount: 0, percentage: 0 };
-      
-      let newRecords;
-      if (customDate) {
-        const matchString = new Date(customDate).toDateString();
-        const exists = subAtt.records.some(r => new Date(r.date).toDateString() === matchString);
-        if (exists) {
-          newRecords = subAtt.records.map(r => {
-            if (new Date(r.date).toDateString() === matchString) {
-              return {
-                ...r,
-                status: 'NC',
-                reason,
-                hash: record.hash,
-                verified: true,
-              };
-            }
-            return r;
-          });
-        } else {
-          newRecords = [...subAtt.records, {
-            id: `att-${studentId}-${subjectId}-${Date.now()}`,
-            date: targetDate.toISOString(),
-            status: 'NC',
-            reason,
-            hash: record.hash,
-            verified: true,
-          }];
-        }
-      } else {
-        newRecords = [...subAtt.records, {
-          id: `att-${studentId}-${subjectId}-${Date.now()}`,
-          date: targetDate.toISOString(),
-          status: 'NC',
-          reason,
-          hash: record.hash,
-          verified: true,
-        }];
-      }
+      const studentData = prev[studentId] || {};
+      const subjectData = studentData[subjectId] || {
+        records: [],
+        totalClasses: 0,
+        presentCount: 0,
+        absentCount: 0,
+        percentage: 0,
+      };
 
-      const present = newRecords.filter(r => r.status === 'Present').length;
+      const newRecord = {
+        date: dateStr,
+        time: timeStr,
+        status: 'Present',
+        txHash: hash,
+        verified: true,
+      };
 
-      const studentObj = students.find(s => s.id === studentId);
-      const subjectObj = subjects.find(s => s.id === subjectId);
-      if (studentObj && subjectObj) {
-        supabase.from('attendance_records').insert([{
-          student_name: studentObj.name,
-          usn: studentObj.usn,
-          subject: subjectObj.code,
-          date: targetDate.toISOString().split('T')[0],
-          time: targetDate.toTimeString().split(' ')[0],
-          status: 'NC',
-          blockchain_hash: record.hash,
-          location_lat: 0,
-          location_lng: 0,
-          verified: true
-        }]).then(({ error }) => {
-          if (error) console.error("Error inserting NC excuse:", error);
-        });
-      }
+      const newRecords = [newRecord, ...subjectData.records];
+      const newTotal = subjectData.totalClasses + 1;
+      const newPresent = subjectData.presentCount + 1;
 
       return {
         ...prev,
         [studentId]: {
-          ...studentAtt,
+          ...studentData,
           [subjectId]: {
+            ...subjectData,
             records: newRecords,
-            totalClasses: newRecords.length,
-            presentCount: present,
-            absentCount: newRecords.length - present,
-            percentage: Math.round((present / newRecords.length) * 100),
+            totalClasses: newTotal,
+            presentCount: newPresent,
+            percentage: Math.round((newPresent / newTotal) * 100),
           },
         },
       };
     });
 
-    return record;
+    const stud = students.find(s => s.id === studentId);
+    const sub = subjects.find(s => s.id === subjectId);
+
+    fetch(`${API_BASE}/api/attendance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentId,
+        studentName: stud?.name || 'Student',
+        usn: stud?.usn || 'USN',
+        subject: sub?.code || subjectId,
+        date: dateStr,
+        time: timeStr,
+        status: 'Present',
+        blockchainHash: hash,
+        locationLat: 12.9786,
+        locationLng: 77.3640,
+        verified: true
+      })
+    }).catch(e => console.error("Python attendance error:", e));
+
+    return hash;
   }, [students, subjects]);
 
   const value = {
@@ -839,7 +848,8 @@ export function AppProvider({ children }) {
     login, logout, register, clearDatabase, fetchSystemData,
     // Admin actions
     addTeacher, deleteTeacher, updateTeacherAssignments,
-    addStudent, deleteStudent,
+    addStudent, updateStudent, deleteStudent, enrollStudentFace, removeStudentFace, verifyFaceLogin,
+    sendWhatsAppAbsentAlert,
     addSection, deleteSection,
     addSubject, deleteSubject,
     // Teacher actions

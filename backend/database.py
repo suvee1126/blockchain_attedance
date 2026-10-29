@@ -67,9 +67,27 @@ def init_db():
         usn TEXT NOT NULL UNIQUE,
         email TEXT NOT NULL UNIQUE,
         section_id TEXT NOT NULL,
-        password TEXT DEFAULT 'pass'
+        password TEXT DEFAULT 'pass',
+        parent_name TEXT DEFAULT '',
+        parent_phone TEXT DEFAULT ''
     );
     """)
+
+    # Migration: Ensure parent_name, parent_phone, and face biometric columns exist
+    cursor.execute("PRAGMA table_info(students)")
+    existing_cols = [row[1] for row in cursor.fetchall()]
+    if "parent_name" not in existing_cols:
+        cursor.execute("ALTER TABLE students ADD COLUMN parent_name TEXT DEFAULT ''")
+    if "parent_phone" not in existing_cols:
+        cursor.execute("ALTER TABLE students ADD COLUMN parent_phone TEXT DEFAULT ''")
+    if "face_registered" not in existing_cols:
+        cursor.execute("ALTER TABLE students ADD COLUMN face_registered INTEGER DEFAULT 0")
+    if "face_descriptor" not in existing_cols:
+        cursor.execute("ALTER TABLE students ADD COLUMN face_descriptor TEXT DEFAULT '[]'")
+    if "face_image" not in existing_cols:
+        cursor.execute("ALTER TABLE students ADD COLUMN face_image TEXT DEFAULT ''")
+    if "face_enrolled_at" not in existing_cols:
+        cursor.execute("ALTER TABLE students ADD COLUMN face_enrolled_at TEXT DEFAULT ''")
 
     # Active Sessions table
     cursor.execute("""
@@ -319,30 +337,96 @@ def delete_teacher(t_id: str):
 
 def get_students() -> List[Dict[str, Any]]:
     conn = get_db_connection()
-    rows = conn.execute("SELECT id, name, usn, email, section_id, password FROM students").fetchall()
+    rows = conn.execute("SELECT id, name, usn, email, section_id, password, parent_name, parent_phone, face_registered, face_descriptor, face_image, face_enrolled_at FROM students").fetchall()
     conn.close()
     result = []
     for r in rows:
         d = dict(r)
         d['sectionId'] = d.pop('section_id')
+        d['parentName'] = d.pop('parent_name', '') or ''
+        d['parentPhone'] = d.pop('parent_phone', '') or ''
+        d['faceRegistered'] = bool(d.pop('face_registered', 0))
+        d['faceDescriptor'] = json.loads(d.pop('face_descriptor', '[]') or '[]')
+        d['faceImage'] = d.pop('face_image', '') or ''
+        d['faceEnrolledAt'] = d.pop('face_enrolled_at', '') or ''
         result.append(d)
     return result
 
-def insert_student(s_id: int, name: str, usn: str, email: str, section_id: str, password: str = "pass"):
+def enroll_student_face(student_id: int, feature_vector: list, thumbnail_b64: str, enrolled_at: str):
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE students SET face_registered = 1, face_descriptor = ?, face_image = ?, face_enrolled_at = ? WHERE id = ?",
+        (json.dumps(feature_vector), thumbnail_b64, enrolled_at, student_id)
+    )
+    conn.commit()
+    conn.close()
+    sync_doc_to_firebase("students", str(student_id), {
+        "faceRegistered": True,
+        "faceDescriptor": feature_vector,
+        "faceImage": thumbnail_b64,
+        "faceEnrolledAt": enrolled_at
+    })
+
+def remove_student_face(student_id: int):
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE students SET face_registered = 0, face_descriptor = '[]', face_image = '', face_enrolled_at = '' WHERE id = ?",
+        (student_id,)
+    )
+    conn.commit()
+    conn.close()
+    sync_doc_to_firebase("students", str(student_id), {
+        "faceRegistered": False,
+        "faceDescriptor": [],
+        "faceImage": "",
+        "faceEnrolledAt": ""
+    })
+
+def insert_student(s_id: int, name: str, usn: str, email: str, section_id: str, password: str = "pass", parent_name: str = "", parent_phone: str = ""):
     email_clean = email.strip().lower()
     usn_clean = usn.strip().upper()
     pwd_clean = password.strip() if password else "pass"
+    p_name_clean = (parent_name or "").strip()
+    p_phone_clean = (parent_phone or "").strip()
     conn = get_db_connection()
     conn.execute(
-        "INSERT OR REPLACE INTO students (id, name, usn, email, section_id, password) VALUES (?, ?, ?, ?, ?, ?)",
-        (s_id, name.strip(), usn_clean, email_clean, section_id, pwd_clean)
+        "INSERT OR REPLACE INTO students (id, name, usn, email, section_id, password, parent_name, parent_phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (s_id, name.strip(), usn_clean, email_clean, section_id, pwd_clean, p_name_clean, p_phone_clean)
     )
     conn.commit()
     conn.close()
     sync_doc_to_firebase("students", str(s_id), {
         "id": s_id, "name": name.strip(), "usn": usn_clean, "email": email_clean,
-        "sectionId": section_id, "password": pwd_clean
+        "sectionId": section_id, "password": pwd_clean,
+        "parentName": p_name_clean, "parentPhone": p_phone_clean
     })
+
+def update_student(s_id: int, name: str, usn: str, email: str, section_id: str, parent_name: str = "", parent_phone: str = "", password: str = None):
+    email_clean = email.strip().lower()
+    usn_clean = usn.strip().upper()
+    p_name_clean = (parent_name or "").strip()
+    p_phone_clean = (parent_phone or "").strip()
+    conn = get_db_connection()
+    if password:
+        pwd_clean = password.strip()
+        conn.execute(
+            "UPDATE students SET name = ?, usn = ?, email = ?, section_id = ?, parent_name = ?, parent_phone = ?, password = ? WHERE id = ?",
+            (name.strip(), usn_clean, email_clean, section_id, p_name_clean, p_phone_clean, pwd_clean, s_id)
+        )
+    else:
+        conn.execute(
+            "UPDATE students SET name = ?, usn = ?, email = ?, section_id = ?, parent_name = ?, parent_phone = ? WHERE id = ?",
+            (name.strip(), usn_clean, email_clean, section_id, p_name_clean, p_phone_clean, s_id)
+        )
+    conn.commit()
+    conn.close()
+    payload = {
+        "id": s_id, "name": name.strip(), "usn": usn_clean, "email": email_clean,
+        "sectionId": section_id, "parentName": p_name_clean, "parentPhone": p_phone_clean
+    }
+    if password:
+        payload["password"] = password.strip()
+    sync_doc_to_firebase("students", str(s_id), payload)
 
 def delete_student(s_id: int):
     conn = get_db_connection()

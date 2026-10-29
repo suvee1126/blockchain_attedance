@@ -28,6 +28,8 @@ export default function LoginPage() {
   const [regConfirmPassword, setRegConfirmPassword] = useState('');
   const [regUsn, setRegUsn] = useState('');
   const [regSectionId, setRegSectionId] = useState('');
+  const [regParentName, setRegParentName] = useState('');
+  const [regParentPhone, setRegParentPhone] = useState('');
   const [regDept, setRegDept] = useState('Computer Science');
 
   const [error, setError] = useState('');
@@ -50,7 +52,7 @@ export default function LoginPage() {
     const cleanPwd = password.trim();
 
     if (!cleanEmail || !cleanPwd) {
-      setError('Please fill in both your email and password.');
+      setError('Please fill in both your email/USN and password.');
       return;
     }
 
@@ -61,7 +63,7 @@ export default function LoginPage() {
       const roleObj = roles.find((r) => r.id === selectedRole);
       navigate(roleObj ? roleObj.path : '/student');
     } catch (err) {
-      setError(err.message || 'Login failed. Please verify your email and password.');
+      setError(err.message || 'Login failed. Please verify your credentials.');
       setIsLoading(false);
     }
   };
@@ -90,54 +92,75 @@ export default function LoginPage() {
       return;
     }
 
-    if (selectedRole === 'student' && !regUsn.trim()) {
-      setError('Student USN / Roll number is required.');
-      return;
-    }
-
     setIsLoading(true);
 
     try {
-      const payload = {
-        role: selectedRole,
-        name: cleanName,
-        email: cleanEmail,
-        password: cleanPwd,
-        usn: selectedRole === 'student' ? regUsn.trim().toUpperCase() : undefined,
-        sectionId: selectedRole === 'student' ? (regSectionId || (sections[0]?.id || 's1')) : undefined,
-        department: selectedRole === 'teacher' ? regDept : undefined,
-      };
+      if (selectedRole === 'student') {
+        const cleanUsn = regUsn.trim();
+        const sectionId = regSectionId || (sections[0] ? sections[0].id : 's1');
+        if (!cleanUsn) {
+          setError('Please provide your College USN / Roll number.');
+          setIsLoading(false);
+          return;
+        }
 
-      const user = await register(payload);
-      setSuccessMsg('Account registered successfully! Redirecting...');
-      setTimeout(() => {
-        const roleObj = roles.find((r) => r.id === selectedRole);
-        navigate(roleObj ? roleObj.path : '/student');
-      }, 500);
+        await register('student', {
+          name: cleanName,
+          email: cleanEmail,
+          password: cleanPwd,
+          usn: cleanUsn,
+          sectionId: sectionId,
+          parentName: regParentName.trim(),
+          parentPhone: regParentPhone.trim()
+        });
+
+        setSuccessMsg(`Student account created successfully! Please sign in with your email and password.`);
+        setAuthMode('login');
+        setEmail(cleanEmail);
+        setPassword(cleanPwd);
+      } else if (selectedRole === 'teacher') {
+        await register('teacher', {
+          name: cleanName,
+          email: cleanEmail,
+          password: cleanPwd,
+          department: regDept.trim() || 'Computer Science'
+        });
+
+        setSuccessMsg(`Teacher account created successfully! Please sign in.`);
+        setAuthMode('login');
+        setEmail(cleanEmail);
+        setPassword(cleanPwd);
+      }
     } catch (err) {
-      setError(err.message || 'Registration failed. Please check input values.');
+      setError(err.message || 'Registration failed. Email or USN may already exist.');
+    } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 font-sans px-4 py-8">
-      <div className="w-full max-w-md">
-        {/* Header */}
-        <div className="text-center mb-6 flex flex-col items-center gap-2">
-          <SummitLogo className="w-16 h-16 animate-neon-glow rounded-3xl" />
-          <div>
-            <h1 className="text-3xl font-black tracking-tight text-slate-900 font-heading">SummitAttend</h1>
-            <p className="text-xs font-semibold text-slate-500">Cryptographic Blockchain & Cloud Database Portal</p>
+    <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center p-4 relative overflow-hidden font-sans">
+      {/* Background Decorative Rings */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[650px] h-[650px] bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute top-1/3 left-1/4 w-[400px] h-[400px] bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+
+      {/* Main Container */}
+      <div className="w-full max-w-md relative z-10">
+        {/* Header / Brand */}
+        <div className="flex flex-col items-center mb-6 text-center">
+          <div className="flex items-center gap-2 mb-2">
+            <SummitLogo className="w-10 h-10" />
+            <h1 className="text-2xl font-black tracking-tight text-white font-heading">
+              Summit<span className="text-blue-400">Attend</span>
+            </h1>
           </div>
-          {/* Cloud Database indicator */}
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 border border-blue-200 rounded-full text-[11px] font-bold text-blue-700 mt-1">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>Cloud Database: smart-add-f776e</span>
-          </div>
+          <p className="text-xs font-semibold text-slate-400">
+            Smart Attendance Management with Biometrics & Blockchain Ledger
+          </p>
         </div>
 
-        <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-xl shadow-slate-100/50">
+        {/* Card */}
+        <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-xl shadow-slate-100/10">
           {/* Mode Switcher: Sign In vs Register */}
           <div className="flex border border-slate-200 rounded-2xl p-1 bg-slate-50 mb-6">
             <button
@@ -174,8 +197,8 @@ export default function LoginPage() {
           </h2>
           <p className="mt-1 text-xs text-slate-400 text-center lg:text-left font-medium">
             {authMode === 'login'
-              ? 'Select role and log in with your Gmail & password'
-              : 'Register your email in the database ledger'}
+              ? 'Select your role and sign in with email and password'
+              : 'Register your account in the permanent database'}
           </p>
 
           {/* ── Role Selector Cards ── */}
@@ -207,13 +230,37 @@ export default function LoginPage() {
             })}
           </div>
 
-          {/* ── Sign In Form ── */}
+          {/* ── Sign In Form (Email + Password for ALL roles) ── */}
           {authMode === 'login' ? (
             <form onSubmit={handleLoginSubmit} className="mt-6 space-y-4">
-              {/* Email */}
+              {/* Role badge */}
+              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">
+                    {selectedRole === 'student' ? '🎓' : selectedRole === 'teacher' ? '👨‍🏫' : '🔑'}
+                  </span>
+                  <div>
+                    <p className="text-xs font-bold text-slate-800">
+                      {selectedRole === 'student' ? 'Student Portal Login' : selectedRole === 'teacher' ? 'Teacher Portal Login' : 'Admin Portal Login'}
+                    </p>
+                    <p className="text-[10px] text-slate-500">
+                      {selectedRole === 'student' 
+                        ? 'Enter your student email or USN and password'
+                        : selectedRole === 'teacher'
+                        ? 'Enter your registered teacher email and password'
+                        : 'Sign in with administrator credentials'}
+                    </p>
+                  </div>
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                  {selectedRole}
+                </span>
+              </div>
+
+              {/* Email / USN Input */}
               <div className="space-y-1.5">
-                <label htmlFor="login-email" className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  Email / Gmail Address
+                <label htmlFor="login-email" className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  {selectedRole === 'student' ? 'Student Email or USN / Roll No' : 'Email Address'}
                 </label>
                 <div className="relative">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
@@ -223,8 +270,14 @@ export default function LoginPage() {
                   </div>
                   <input
                     id="login-email"
-                    type="email"
-                    placeholder="e.g. user@gmail.com"
+                    type="text"
+                    placeholder={
+                      selectedRole === 'student'
+                        ? 'e.g. suhas123@gmail.com or 123'
+                        : selectedRole === 'teacher'
+                        ? 'e.g. teach1@gmail.com'
+                        : 'e.g. admin@summit.edu'
+                    }
                     value={email}
                     onChange={(e) => {
                       setEmail(e.target.value);
@@ -239,7 +292,7 @@ export default function LoginPage() {
               {/* Password */}
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center">
-                  <label htmlFor="login-password" className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  <label htmlFor="login-password" className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                     Password / Access Key
                   </label>
                   <button
@@ -278,7 +331,7 @@ export default function LoginPage() {
                     <span className="text-base leading-none">⚠️</span>
                     <div className="flex-1">
                       <p>{error}</p>
-                      {error.includes('No') && error.includes('found') && (
+                      {error.includes('No') && error.includes('found') && selectedRole !== 'admin' && (
                         <button
                           type="button"
                           onClick={() => { setAuthMode('register'); setError(''); }}
@@ -292,17 +345,27 @@ export default function LoginPage() {
                 </div>
               )}
 
+              {/* Success message */}
+              {successMsg && (
+                <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-800 font-bold animate-fadeIn">
+                  <p className="flex items-center gap-1.5">
+                    <span>✅</span>
+                    <span>{successMsg}</span>
+                  </p>
+                </div>
+              )}
+
               {/* Submit button */}
               <button
                 type="submit"
                 disabled={isLoading}
                 className={`
                   w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-extrabold text-white
-                  transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 cursor-pointer
+                  transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 cursor-pointer shadow-md
                   ${
                     isLoading
                       ? 'bg-slate-400 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 hover:from-blue-700 hover:to-indigo-900 shadow-md shadow-blue-100 hover:scale-[1.01]'
+                      : 'bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 hover:from-blue-700 hover:to-indigo-900 shadow-blue-100 hover:scale-[1.01]'
                   }
                 `}
               >
@@ -312,11 +375,11 @@ export default function LoginPage() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                     </svg>
-                    Verifying Credentials in Database…
+                    Verifying Credentials…
                   </>
                 ) : (
                   <>
-                    Sign In to Portal
+                    <span>Sign In as {selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)}</span>
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                     </svg>
@@ -329,125 +392,150 @@ export default function LoginPage() {
             <form onSubmit={handleRegisterSubmit} className="mt-6 space-y-4">
               {/* Full Name */}
               <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                   Full Name
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. John Doe"
+                  placeholder="e.g. Suhas Sharma"
                   value={regName}
                   onChange={(e) => setRegName(e.target.value)}
                   required
-                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10 focus:outline-none transition-all text-sm font-medium"
+                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
                 />
               </div>
 
               {/* Email */}
               <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  Email / Gmail Address
+                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  Email Address
                 </label>
                 <input
                   type="email"
-                  placeholder="e.g. yourname@gmail.com"
+                  placeholder="e.g. suhas123@gmail.com"
                   value={regEmail}
                   onChange={(e) => setRegEmail(e.target.value)}
                   required
-                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10 focus:outline-none transition-all text-sm font-medium"
+                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
                 />
               </div>
 
-              {/* Role specific: Student USN & Section */}
+              {/* Role Specific Registration Fields */}
               {selectedRole === 'student' && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                      USN / Roll No
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                        USN / Roll No
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 123"
+                        value={regUsn}
+                        onChange={(e) => setRegUsn(e.target.value)}
+                        required
+                        className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-mono font-medium"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                        Section
+                      </label>
+                      <select
+                        value={regSectionId}
+                        onChange={(e) => setRegSectionId(e.target.value)}
+                        className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
+                      >
+                        {sections.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name} ({s.year}th Year)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Parent Details */}
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      Parent's Full Name
                     </label>
                     <input
                       type="text"
-                      placeholder="e.g. 1SI22CS001"
-                      value={regUsn}
-                      onChange={(e) => setRegUsn(e.target.value)}
-                      required
-                      className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-sm font-medium uppercase"
+                      placeholder="e.g. Mr. Rajesh Sharma"
+                      value={regParentName}
+                      onChange={(e) => setRegParentName(e.target.value)}
+                      className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
                     />
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                      Section
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      Parent's WhatsApp Number
                     </label>
-                    <select
-                      value={regSectionId}
-                      onChange={(e) => setRegSectionId(e.target.value)}
-                      className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none text-sm font-medium"
-                    >
-                      {sections.map((sec) => (
-                        <option key={sec.id} value={sec.id}>{sec.name}</option>
-                      ))}
-                    </select>
+                    <input
+                      type="tel"
+                      placeholder="e.g. +91 9353591776"
+                      value={regParentPhone}
+                      onChange={(e) => setRegParentPhone(e.target.value)}
+                      className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
+                    />
                   </div>
-                </div>
+                </>
               )}
 
-              {/* Role specific: Teacher Department */}
               {selectedRole === 'teacher' && (
                 <div className="space-y-1">
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                     Department
                   </label>
-                  <select
+                  <input
+                    type="text"
+                    placeholder="e.g. Computer Science & Engineering"
                     value={regDept}
                     onChange={(e) => setRegDept(e.target.value)}
-                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none text-sm font-medium"
-                  >
-                    <option value="Computer Science">Computer Science & Engineering</option>
-                    <option value="Information Science">Information Science & Engineering</option>
-                    <option value="Artificial Intelligence">Artificial Intelligence & ML</option>
-                    <option value="Electronics">Electronics & Communication</option>
-                  </select>
+                    required
+                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
+                  />
                 </div>
               )}
 
-              {/* Passwords */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+              {/* Password Fields */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                     Password
                   </label>
                   <input
                     type="password"
-                    placeholder="Min 3 characters"
+                    placeholder="••••••••"
                     value={regPassword}
                     onChange={(e) => setRegPassword(e.target.value)}
                     required
-                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-sm font-medium"
+                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
                   />
                 </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                    Confirm Password
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                    Confirm
                   </label>
                   <input
                     type="password"
-                    placeholder="Repeat password"
+                    placeholder="••••••••"
                     value={regConfirmPassword}
                     onChange={(e) => setRegConfirmPassword(e.target.value)}
                     required
-                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-sm font-medium"
+                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
                   />
                 </div>
               </div>
 
-              {/* Error / Success message */}
+              {/* Error message */}
               {error && (
                 <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 font-semibold animate-fadeIn">
-                  ⚠️ {error}
-                </div>
-              )}
-              {successMsg && (
-                <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-700 font-semibold animate-fadeIn">
-                  ✅ {successMsg}
+                  <p className="flex items-center gap-1.5">
+                    <span>⚠️</span>
+                    <span>{error}</span>
+                  </p>
                 </div>
               )}
 
@@ -457,56 +545,68 @@ export default function LoginPage() {
                 disabled={isLoading}
                 className={`
                   w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-extrabold text-white
-                  transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 cursor-pointer
+                  transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 cursor-pointer shadow-md
                   ${
                     isLoading
                       ? 'bg-slate-400 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-emerald-600 via-teal-700 to-blue-700 hover:from-emerald-700 hover:to-blue-800 shadow-md shadow-emerald-100 hover:scale-[1.01]'
+                      : 'bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800'
                   }
                 `}
               >
-                {isLoading ? 'Storing Account in Database…' : 'Register & Enter Dashboard'}
+                {isLoading ? 'Creating Account…' : 'Register Account'}
               </button>
             </form>
           )}
 
-          {/* Quick Demo Logins Helper */}
+          {/* Quick Demo Credentials Toggle */}
           <div className="mt-6 pt-4 border-t border-slate-100 text-center">
             <button
               type="button"
               onClick={() => setShowDemoLogins(!showDemoLogins)}
-              className="text-xs text-slate-400 hover:text-blue-600 font-semibold cursor-pointer"
+              className="text-[11px] font-bold text-slate-500 hover:text-blue-600 transition-colors cursor-pointer inline-flex items-center gap-1"
             >
-              {showDemoLogins ? '▲ Hide Quick Credentials' : '▼ View Administrator Credentials'}
+              <span>{showDemoLogins ? '▼ Hide Quick Credentials' : '▶ Show Quick Credentials'}</span>
             </button>
 
             {showDemoLogins && (
-              <div className="mt-3 p-3 bg-slate-50 border border-slate-200 rounded-2xl text-left text-xs space-y-2">
-                <div className="p-2 bg-white rounded-xl border border-slate-200 flex justify-between items-center">
-                  <div>
-                    <span className="font-bold text-slate-800">Admin Account:</span>
-                    <p className="text-[11px] text-slate-500">admin@blockchain.edu / admin123</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedRole('admin');
-                      setEmail('admin@blockchain.edu');
-                      setPassword('admin123');
-                      setAuthMode('login');
-                    }}
-                    className="text-[10px] bg-blue-50 text-blue-700 px-2.5 py-1 rounded-lg font-bold hover:bg-blue-100"
-                  >
-                    Use
-                  </button>
+              <div className="mt-3 bg-slate-50 rounded-2xl p-3 border border-slate-200 text-left space-y-2 text-[11px] animate-fadeIn">
+                <div 
+                  onClick={() => { setSelectedRole('student'); setEmail('suhas123@gmail.com'); setPassword('suhas'); setAuthMode('login'); }}
+                  className="p-1.5 hover:bg-white rounded-lg cursor-pointer transition-colors"
+                >
+                  <p className="font-bold text-slate-800">🎓 Student: <span className="font-mono text-blue-600">suhas123@gmail.com</span> (USN: 123)</p>
+                  <p className="text-[10px] text-slate-500">Password: <span className="font-mono">suhas</span></p>
                 </div>
-                <p className="text-[10px] text-slate-400">
-                  Tip: To use your own Gmail, select &quot;Create Account&quot; above to register with any Gmail and password, which stores directly in the database!
-                </p>
+                <div 
+                  onClick={() => { setSelectedRole('student'); setEmail('stu1@gmail.com'); setPassword('pass'); setAuthMode('login'); }}
+                  className="p-1.5 hover:bg-white rounded-lg cursor-pointer transition-colors"
+                >
+                  <p className="font-bold text-slate-800">🎓 Student: <span className="font-mono text-blue-600">stu1@gmail.com</span> (USN: 001)</p>
+                  <p className="text-[10px] text-slate-500">Password: <span className="font-mono">pass</span> • Face Enrolled</p>
+                </div>
+                <div 
+                  onClick={() => { setSelectedRole('teacher'); setEmail('teach1@gmail.com'); setPassword('pass'); setAuthMode('login'); }}
+                  className="p-1.5 hover:bg-white rounded-lg cursor-pointer transition-colors"
+                >
+                  <p className="font-bold text-slate-800">👨‍🏫 Teacher: <span className="font-mono text-blue-600">teach1@gmail.com</span></p>
+                  <p className="text-[10px] text-slate-500">Password: <span className="font-mono">pass</span></p>
+                </div>
+                <div 
+                  onClick={() => { setSelectedRole('admin'); setEmail('admin@summit.edu'); setPassword('admin123'); setAuthMode('login'); }}
+                  className="p-1.5 hover:bg-white rounded-lg cursor-pointer transition-colors"
+                >
+                  <p className="font-bold text-slate-800">🔑 Admin: <span className="font-mono text-blue-600">admin@summit.edu</span></p>
+                  <p className="text-[10px] text-slate-500">Password: <span className="font-mono">admin123</span></p>
+                </div>
               </div>
             )}
           </div>
         </div>
+
+        {/* Footer */}
+        <p className="text-center text-[11px] text-slate-500 mt-6">
+          SummitAttend Biometric Security • Powered by OpenCV Deep Learning & Blockchain
+        </p>
       </div>
     </div>
   );
