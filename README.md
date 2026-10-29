@@ -32,7 +32,7 @@ or run with auto-browser launch:
 python run.py
 ```
 
-- **Web Application**: [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
+- **Web Application**: [http://127.0.0.1:8000/](http://127.0.0.1:8000/ or (http://127.0.0.1:5173/))
 - **Interactive Swagger API Docs**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - **ReDoc Specification**: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
 
