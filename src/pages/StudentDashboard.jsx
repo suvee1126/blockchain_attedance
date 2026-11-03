@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import jsQR from 'jsqr';
 import { useApp } from '../AppContext';
-import { shortenHash, formatDate, formatTime, haversineDistance, getCurrentPosition } from '../utils';
+import { shortenHash, formatDate, formatTime, haversineDistance, getCurrentPosition, compareFaceBiometricsClientSide } from '../utils';
 import { SummitLogo } from '../components/SummitLogo';
 
 export default function StudentDashboard() {
@@ -308,6 +308,121 @@ export default function StudentDashboard() {
     scanLoopRef.current = requestAnimationFrame(tick);
   };
 
+  const [activeFacingMode, setActiveFacingMode] = useState('environment');
+
+  const startScannerCamera = async (targetFacing = 'environment') => {
+    setScannerCameraError('');
+
+    // Ensure any previously active streams are stopped first
+    if (scannerStream) {
+      scannerStream.getTracks().forEach(t => t.stop());
+      setScannerStream(null);
+    }
+    if (verifyStream) {
+      verifyStream.getTracks().forEach(t => t.stop());
+      setVerifyStream(null);
+    }
+
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      setScannerCameraError('Camera access not supported on this device/browser.');
+      return;
+    }
+
+    let stream = null;
+    try {
+      if (targetFacing === 'environment') {
+        // Method 1: Strict exact environment constraint (guarantees back camera on mobile)
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { exact: 'environment' },
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            }
+          });
+        } catch (e1) {
+          console.log("exact environment failed, enumerating rear devices...", e1);
+        }
+
+        // Method 2: Enumerate devices and find rear camera deviceId
+        if (!stream) {
+          try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoInputs = devices.filter(d => d.kind === 'videoinput');
+            const rearCamera = videoInputs.find(d => {
+              const lbl = (d.label || '').toLowerCase();
+              return lbl.includes('back') || lbl.includes('rear') || lbl.includes('environment') || lbl.includes('0, facing back');
+            });
+
+            if (rearCamera?.deviceId) {
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                  deviceId: { exact: rearCamera.deviceId },
+                  width: { ideal: 1280 },
+                  height: { ideal: 720 }
+                }
+              });
+            }
+          } catch (e2) {
+            console.log("device enumeration rear camera failed:", e2);
+          }
+        }
+
+        // Method 3: Fallback to ideal environment
+        if (!stream) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: { ideal: 'environment' } }
+            });
+          } catch (e3) {
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment' }
+              });
+            } catch (e4) {
+              stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            }
+          }
+        }
+      } else {
+        // Front selfie camera
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user' }
+        }).catch(() => navigator.mediaDevices.getUserMedia({ video: true }));
+      }
+
+      setScannerStream(stream);
+      setActiveFacingMode(targetFacing);
+
+      const attachVideo = () => {
+        const video = scannerVideoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          video.setAttribute('playsinline', 'true');
+          video.setAttribute('webkit-playsinline', 'true');
+          video.muted = true;
+          video.onloadedmetadata = () => {
+            video.play().catch(e => console.warn('Scanner video play deferred:', e));
+            startQrFrameAnalysis(video);
+          };
+        }
+      };
+
+      attachVideo();
+      setTimeout(attachVideo, 100);
+      setTimeout(attachVideo, 300);
+
+    } catch (err) {
+      console.warn("Camera start error:", err);
+      setScannerCameraError("Could not access camera. Please allow camera permissions, or tap 'Upload Photo' below.");
+    }
+  };
+
+  const handleToggleScannerCamera = () => {
+    const nextFacing = activeFacingMode === 'environment' ? 'user' : 'environment';
+    startScannerCamera(nextFacing);
+  };
+
   const handleQrDataFound = async (qrRawData) => {
     if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
     try { navigator.vibrate?.(150); } catch {}
@@ -330,7 +445,7 @@ export default function StudentDashboard() {
       // Graceful fallback if location blocked
     }
 
-    // Switch camera to front camera for face verification if available
+    // Switch camera to front camera for face verification
     try {
       if (scannerStream) {
         scannerStream.getTracks().forEach(t => t.stop());
@@ -340,6 +455,7 @@ export default function StudentDashboard() {
       }).catch(() => navigator.mediaDevices.getUserMedia({ video: true }));
 
       setScannerStream(frontStream);
+      setActiveFacingMode('user');
       if (scannerVideoRef.current) {
         scannerVideoRef.current.srcObject = frontStream;
         scannerVideoRef.current.play().catch(() => {});
@@ -348,7 +464,35 @@ export default function StudentDashboard() {
 
     // Complete biometric identity match & on-chain verification
     setTimeout(async () => {
+      // Biometric face verification on captured frame
+      let biometricPassed = true;
+      let biometricScore = 95.0;
+
+      if (currentStudent?.faceImage && scannerVideoRef.current) {
+        try {
+          const video = scannerVideoRef.current;
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth || 480;
+          canvas.height = video.videoHeight || 480;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const liveSelfie = canvas.toDataURL('image/jpeg', 0.85);
+
+          const matchRes = await compareFaceBiometricsClientSide(currentStudent.faceImage, liveSelfie, 0.72);
+          biometricPassed = matchRes.verified;
+          biometricScore = matchRes.matchPercentage;
+        } catch (e) {
+          console.warn("Check-in biometric check warning:", e);
+        }
+      }
+
       setScanning(false);
+
+      if (!biometricPassed) {
+        setScanStage('failed');
+        setLocationError(`Biometric verification failed (${biometricScore}% match). Face does not match registered student '${currentStudent.name}'. Attendance denied.`);
+        return;
+      }
 
       const targetSessionId = parsed.sessionId || selectedActiveSessionId;
       const session = activeSessions.find(s => s.id === targetSessionId) || parsed;
@@ -387,9 +531,10 @@ export default function StudentDashboard() {
         }
       } else {
         setScanStage('failed');
+        setLocationError(`Classroom boundary check failed: You are ${distanceMeters}m away (max 70m allowed).`);
         setScanResult(null);
       }
-    }, 2000);
+    }, 2200);
   };
 
   // Handle mandatory multi-stage Secure Check-In: QR Code scan first, immediately followed by Biometric Face Scan
@@ -405,47 +550,14 @@ export default function StudentDashboard() {
     setDetectedSessionData(null);
     setShowManualCodeInput(false);
 
-    // Request camera feed with rear preference for QR scanning
-    try {
-      let stream = null;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
-        });
-      } catch {
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment' }
-          });
-        } catch {
-          stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        }
-      }
-
-      setScannerStream(stream);
-
-      const attachVideo = () => {
-        const video = scannerVideoRef.current;
-        if (video) {
-          video.srcObject = stream;
-          video.setAttribute('playsinline', 'true');
-          video.setAttribute('webkit-playsinline', 'true');
-          video.muted = true;
-          video.onloadedmetadata = () => {
-            video.play().catch(e => console.warn('Scanner video play deferred:', e));
-            startQrFrameAnalysis(video);
-          };
-        }
-      };
-
-      attachVideo();
-      setTimeout(attachVideo, 100);
-      setTimeout(attachVideo, 300);
-
-    } catch (err) {
-      console.warn("Camera start error:", err);
-      setScannerCameraError("Camera unavailable or permission denied. You can upload a photo of the QR code below or enter the session code.");
+    // Stop post-login verifyStream if still active
+    if (verifyStream) {
+      verifyStream.getTracks().forEach(t => t.stop());
+      setVerifyStream(null);
     }
+
+    // Request rear camera feed for QR scanning
+    await startScannerCamera('environment');
   };
 
   const handleQrFileUploaded = (e) => {
@@ -496,6 +608,7 @@ export default function StudentDashboard() {
     setDetectedSessionData(null);
     setShowManualCodeInput(false);
     setManualCodeInput('');
+    setActiveFacingMode('environment');
   };
 
   // ─── POST-LOGIN REAL FACE VERIFICATION OVERLAY ───
@@ -1172,6 +1285,23 @@ export default function StudentDashboard() {
               accept="image/*"
               className="hidden"
             />
+
+            {/* Camera facing indicator and flip button */}
+            {scanStage === 'qr' && (
+              <div className="flex items-center justify-between mt-2.5 px-0.5">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                  <span className={`w-2 h-2 rounded-full ${activeFacingMode === 'environment' ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'}`} />
+                  {activeFacingMode === 'environment' ? '📷 Rear Camera Active' : '🤳 Front Camera Active'}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleToggleScannerCamera}
+                  className="inline-flex items-center gap-1 px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-lg border border-blue-200 shadow-sm cursor-pointer active:scale-95 transition-all"
+                >
+                  🔄 Flip Camera
+                </button>
+              </div>
+            )}
 
             {/* Scanner Viewport */}
             <div className="my-4 relative aspect-square bg-slate-950 rounded-2xl overflow-hidden border-2 border-slate-800 flex items-center justify-center shadow-inner">

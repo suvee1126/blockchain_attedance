@@ -92,10 +92,11 @@ def extract_face_biometric(image_data: str) -> Dict[str, Any]:
         "confidence": float(best_face[-1])
     }
 
-def compare_faces(stored_feature_list: list, live_image_data: str, threshold: float = 0.40) -> Dict[str, Any]:
+def compare_faces(stored_feature_list: list, live_image_data: str, threshold: float = 0.50) -> Dict[str, Any]:
     """
-    Compares live face from camera against enrolled student feature embedding using Cosine Similarity.
-    Official SFace threshold is 0.363; we use 0.40 for strict anti-spoofing accuracy.
+    Compares live face from camera against enrolled student feature embedding using
+    Cosine Similarity (strict threshold 0.50) and L2 distance (<= 1.02) to prevent
+    impersonation and false positive matches.
     """
     if not stored_feature_list or len(stored_feature_list) != 128:
         return {
@@ -112,23 +113,34 @@ def compare_faces(stored_feature_list: list, live_image_data: str, threshold: fl
             "error": live_res["error"]
         }
 
+    # Verify detection confidence
+    if live_res.get("confidence", 0.0) < 0.65:
+        return {
+            "verified": False,
+            "score": 0.0,
+            "error": "Face detection confidence too low. Please ensure good lighting and look directly into the camera."
+        }
+
     _, recognizer = get_face_models()
     feat_stored = np.array(stored_feature_list, dtype=np.float32).reshape(1, 128)
     feat_live = np.array(live_res["featureVector"], dtype=np.float32).reshape(1, 128)
 
     cosine_score = float(recognizer.match(feat_stored, feat_live, cv2.FaceRecognizerSF_FR_COSINE))
+    l2_score = float(recognizer.match(feat_stored, feat_live, cv2.FaceRecognizerSF_FR_NORM_L2))
 
     # Convert score to an intuitive percentage (0 to 100%)
     match_pct = max(0.0, min(100.0, (cosine_score / 0.70) * 100.0))
 
-    is_match = cosine_score >= threshold
+    # Dual verification: strict cosine threshold (0.50) AND L2 norm (<= 1.02)
+    is_match = (cosine_score >= threshold) and (l2_score <= 1.02)
 
     return {
         "verified": is_match,
         "cosineScore": round(cosine_score, 4),
+        "l2Distance": round(l2_score, 4),
         "similarityPercentage": round(match_pct, 1),
         "threshold": threshold,
         "liveThumbnail": live_res["thumbnail"],
-        "error": None if is_match else f"Face mismatch. Similarity score ({round(match_pct, 1)}%) below required verification threshold."
+        "error": None if is_match else f"Face mismatch. Similarity score ({round(match_pct, 1)}%) below required verification threshold. Cannot log in with another person's face."
     }
 
