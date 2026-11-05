@@ -64,7 +64,7 @@ app.add_middleware(
 # ─── Auth API ───
 
 @app.post("/api/auth/send-otp")
-async def send_otp_endpoint(req: SendOtpRequest):
+def send_otp_endpoint(req: SendOtpRequest):
     method = (req.method or "email").strip().lower()
     role = req.role.strip().lower()
     purpose = (req.purpose or "verification").strip().lower()
@@ -130,7 +130,7 @@ async def send_otp_endpoint(req: SendOtpRequest):
 
 
 @app.post("/api/auth/verify-otp")
-async def verify_otp_endpoint(req: VerifyOtpRequest):
+def verify_otp_endpoint(req: VerifyOtpRequest):
     method = (req.method or "email").strip().lower()
     role = req.role.strip().lower()
     purpose = (req.purpose or "verification").strip().lower()
@@ -153,9 +153,9 @@ async def verify_otp_endpoint(req: VerifyOtpRequest):
 
 
 @app.post("/api/auth/forgot-password/request")
-async def forgot_password_request(req: SendOtpRequest):
+def forgot_password_request(req: SendOtpRequest):
     req.purpose = "reset"
-    return await send_otp_endpoint(req)
+    return send_otp_endpoint(req)
 
 
 @app.post("/api/auth/forgot-password/reset")

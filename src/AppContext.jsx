@@ -36,7 +36,7 @@ async function safeFetchJson(url, options = {}) {
 
   try {
     const controller = new AbortController();
-    const timeoutMs = options.timeout || 2500;
+    const timeoutMs = options.timeout || (url.includes('/api/auth/') ? 15000 : 3500);
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const res = await fetch(url, { ...options, signal: controller.signal });
@@ -1364,11 +1364,12 @@ export function AppProvider({ children }) {
       phone: method === 'mobile' ? cleanId : ''
     };
 
-    // 1. Try local backend
+    // 1. Try API dispatch (Local backend on 5173/8000 OR Vercel Serverless Function on Production)
     const resp = await safeFetchJson(`${API_BASE}/api/auth/send-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      timeout: 15000
     });
     if (resp.ok && resp.isJson && resp.data) {
       return resp.data;
@@ -1416,11 +1417,12 @@ export function AppProvider({ children }) {
       phone: method === 'mobile' ? cleanId : ''
     };
 
-    // 1. Try local backend
+    // 1. Try API verification (Local backend on 5173/8000 OR Vercel Serverless Function on Production)
     const resp = await safeFetchJson(`${API_BASE}/api/auth/verify-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      timeout: 10000
     });
     if (resp.ok && resp.isJson && resp.data) {
       return resp.data;
