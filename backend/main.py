@@ -17,7 +17,8 @@ from .database import (
     get_active_sessions, insert_active_session, update_active_session_students, delete_active_session,
     get_nc_records, insert_nc_record,
     get_attendance_records, insert_attendance_record,
-    get_marks, insert_or_update_mark, delete_mark, set_marks_lock
+    get_marks, insert_or_update_mark, delete_mark, set_marks_lock,
+    authenticate_user_credentials, set_user_otp, verify_user_otp, update_user_password, set_user_account_status
 )
 from .firebase_db import (
     get_firebase_status, is_firebase_active,
@@ -25,11 +26,16 @@ from .firebase_db import (
 )
 from .face_engine import extract_face_biometric, compare_faces
 from .blockchain import blockchain, generate_blockchain_hash, haversine_distance
+from .security import (
+    validate_email_format, validate_password_strength, hash_password, verify_password,
+    generate_secure_otp, send_verification_email
+)
 from .models import (
     LoginRequest, RegisterRequest, SectionCreate, SubjectCreate, TeacherCreate,
     TeacherAssignmentUpdate, StudentCreate, StudentUpdate, WhatsAppNotificationRequest, FaceEnrollRequest, FaceLoginRequest, StartSessionRequest,
     MarkAttendanceRequest, StudentCheckInRequest, NCRecordCreate,
-    MarkItem, MarksBatchRequest, MarksLockRequest
+    MarkItem, MarksBatchRequest, MarksLockRequest,
+    SendOtpRequest, VerifyOtpRequest, ResetPasswordRequest, ToggleUserStatusRequest, AdminResetRequest
 )
 
 @asynccontextmanager

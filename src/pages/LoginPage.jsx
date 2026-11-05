@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useApp } from '../AppContext';
+import { useApp, validatePasswordRules } from '../AppContext';
 import { SummitLogo } from '../components/SummitLogo';
 
 const roles = [
@@ -11,7 +11,15 @@ const roles = [
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { login, register, sections, firebaseStatus } = useApp();
+  const {
+    login,
+    register,
+    sections,
+    sendOtp,
+    verifyOtp,
+    forgotPasswordRequest,
+    forgotPasswordReset,
+  } = useApp();
 
   const [authMode, setAuthMode] = useState('login'); // 'login' | 'register'
   const [selectedRole, setSelectedRole] = useState('student');
@@ -32,10 +40,25 @@ export default function LoginPage() {
   const [regParentPhone, setRegParentPhone] = useState('');
   const [regDept, setRegDept] = useState('Computer Science');
 
+  // Registration OTP Modal state
+  const [showOtpModal, setShowOtpModal] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpSentEmail, setOtpSentEmail] = useState('');
+  const [devOtpHint, setDevOtpHint] = useState('');
+
+  // Forgot Password Modal state
+  const [showForgotModal, setShowForgotModal] = useState(false);
+  const [forgotStep, setForgotStep] = useState(1); // 1 = enter email, 2 = enter OTP & new password
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotRole, setForgotRole] = useState('student');
+  const [forgotOtp, setForgotOtp] = useState('');
+  const [forgotNewPassword, setForgotNewPassword] = useState('');
+  const [forgotConfirmPassword, setForgotConfirmPassword] = useState('');
+  const [forgotDevOtpHint, setForgotDevOtpHint] = useState('');
+
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [showDemoLogins, setShowDemoLogins] = useState(false);
 
   const handleRoleChange = (roleId) => {
     setSelectedRole(roleId);
@@ -74,7 +97,7 @@ export default function LoginPage() {
     setSuccessMsg('');
 
     const cleanName = regName.trim();
-    const cleanEmail = regEmail.trim();
+    const cleanEmail = regEmail.trim().toLowerCase();
     const cleanPwd = regPassword.trim();
 
     if (!cleanName || !cleanEmail || !cleanPwd) {
@@ -82,8 +105,11 @@ export default function LoginPage() {
       return;
     }
 
-    if (cleanPwd.length < 3) {
-      setError('Password must be at least 3 characters.');
+    // Strong password validation
+    const { isValid, rules } = validatePasswordRules(cleanPwd);
+    if (!isValid) {
+      const failed = rules.filter((r) => !r.valid).map((r) => r.label).join(', ');
+      setError(`Password requirement not met: ${failed}`);
       return;
     }
 
@@ -95,253 +121,272 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      if (selectedRole === 'student') {
-        const cleanUsn = regUsn.trim();
-        const sectionId = regSectionId || (sections[0] ? sections[0].id : 's1');
-        if (!cleanUsn) {
-          setError('Please provide your College USN / Roll number.');
-          setIsLoading(false);
-          return;
-        }
-
-        await register('student', {
-          name: cleanName,
-          email: cleanEmail,
-          password: cleanPwd,
-          usn: cleanUsn,
-          sectionId: sectionId,
-          parentName: regParentName.trim(),
-          parentPhone: regParentPhone.trim()
-        });
-
-        setSuccessMsg(`Student account created successfully! Please sign in with your email and password.`);
-        setAuthMode('login');
-        setEmail(cleanEmail);
-        setPassword(cleanPwd);
-      } else if (selectedRole === 'teacher') {
-        await register('teacher', {
-          name: cleanName,
-          email: cleanEmail,
-          password: cleanPwd,
-          department: regDept.trim() || 'Computer Science'
-        });
-
-        setSuccessMsg(`Teacher account created successfully! Please sign in.`);
-        setAuthMode('login');
-        setEmail(cleanEmail);
-        setPassword(cleanPwd);
-      }
+      // 1. Send OTP verification code to real email
+      const otpRes = await sendOtp(cleanEmail, selectedRole, 'verification');
+      setOtpSentEmail(cleanEmail);
+      if (otpRes?.devOtp) setDevOtpHint(otpRes.devOtp);
+      setShowOtpModal(true);
+      setSuccessMsg(`Verification code dispatched to ${cleanEmail}. Enter code to activate.`);
     } catch (err) {
-      setError(err.message || 'Registration failed. Email or USN may already exist.');
+      setError(err.message || 'Failed to dispatch email verification code. Please check your email address.');
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Complete registration after verifying OTP
+  const handleVerifyOtpAndCreateAccount = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (!otpCode.trim()) {
+      setError('Please enter the 6-digit verification code.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await verifyOtp(otpSentEmail, selectedRole, otpCode.trim(), 'verification');
+
+      if (selectedRole === 'student') {
+        const cleanUsn = regUsn.trim();
+        const sectionId = regSectionId || (sections[0] ? sections[0].id : 's1');
+
+        await register('student', {
+          name: regName.trim(),
+          email: otpSentEmail,
+          password: regPassword.trim(),
+          usn: cleanUsn,
+          sectionId: sectionId,
+          parentName: regParentName.trim(),
+          parentPhone: regParentPhone.trim(),
+        });
+      } else if (selectedRole === 'teacher') {
+        await register('teacher', {
+          name: regName.trim(),
+          email: otpSentEmail,
+          password: regPassword.trim(),
+          department: regDept.trim() || 'Computer Science',
+        });
+      }
+
+      setShowOtpModal(false);
+      setSuccessMsg('Email verified and account activated successfully! You may now sign in.');
+      setAuthMode('login');
+      setEmail(otpSentEmail);
+      setPassword(regPassword.trim());
+      setOtpCode('');
+    } catch (err) {
+      setError(err.message || 'Verification failed. Incorrect OTP.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Forgot password request OTP
+  const handleForgotSendOtp = async (e) => {
+    e.preventDefault();
+    setError('');
+    const cleanEmail = forgotEmail.trim().toLowerCase();
+    if (!cleanEmail) {
+      setError('Please enter your registered email address.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const res = await forgotPasswordRequest(cleanEmail, forgotRole);
+      if (res?.devOtp) setForgotDevOtpHint(res.devOtp);
+      setForgotStep(2);
+      setSuccessMsg(`Reset code sent to ${cleanEmail}. Enter code and new password.`);
+    } catch (err) {
+      setError(err.message || 'No account found with this email.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Forgot password confirm reset
+  const handleForgotResetPassword = async (e) => {
+    e.preventDefault();
+    setError('');
+
+    if (!forgotOtp.trim()) {
+      setError('Please enter the 6-digit reset code.');
+      return;
+    }
+
+    const { isValid, rules } = validatePasswordRules(forgotNewPassword);
+    if (!isValid) {
+      const failed = rules.filter((r) => !r.valid).map((r) => r.label).join(', ');
+      setError(`New password requirement not met: ${failed}`);
+      return;
+    }
+
+    if (forgotNewPassword !== forgotConfirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await forgotPasswordReset(forgotEmail.trim().toLowerCase(), forgotRole, forgotOtp.trim(), forgotNewPassword, forgotConfirmPassword);
+      setShowForgotModal(false);
+      setForgotStep(1);
+      setSuccessMsg('Password has been securely reset! You can now sign in with your new password.');
+      setEmail(forgotEmail.trim().toLowerCase());
+      setPassword('');
+      setForgotOtp('');
+      setForgotNewPassword('');
+      setForgotConfirmPassword('');
+    } catch (err) {
+      setError(err.message || 'Failed to reset password. Verify code and try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const regPwdRules = validatePasswordRules(regPassword);
+  const forgotPwdRules = validatePasswordRules(forgotNewPassword);
+
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center p-4 relative overflow-hidden font-sans">
+    <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center py-6 px-3 sm:px-6 relative overflow-y-auto font-sans">
       {/* Background Decorative Rings */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[650px] h-[650px] bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute top-1/3 left-1/4 w-[400px] h-[400px] bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[300px] sm:w-[650px] h-[300px] sm:h-[650px] bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute top-1/3 left-1/4 w-[200px] sm:w-[400px] h-[200px] sm:h-[400px] bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
 
       {/* Main Container */}
-      <div className="w-full max-w-md relative z-10">
+      <div className="w-full max-w-md relative z-10 my-auto">
         {/* Header / Brand */}
-        <div className="flex flex-col items-center mb-6 text-center">
-          <div className="flex items-center gap-2 mb-2">
-            <SummitLogo className="w-10 h-10" />
-            <h1 className="text-2xl font-black tracking-tight text-white font-heading">
-              Summit<span className="text-blue-400">Attend</span>
-            </h1>
+        <div className="flex flex-col items-center mb-5 sm:mb-6 text-center">
+          <div className="p-2 sm:p-2.5 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl shadow-xl shadow-blue-500/20 mb-2 sm:mb-3">
+            <SummitLogo className="w-10 h-10 sm:w-12 sm:h-12" />
           </div>
-          <p className="text-xs font-semibold text-slate-400">
-            Smart Attendance Management with Biometrics & Blockchain Ledger
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+            Summit<span className="text-blue-500">Attend</span>
+          </h1>
+          <p className="text-xs text-slate-400 mt-1 max-w-[280px] sm:max-w-xs">
+            Cryptographic Attendance Ledger & Academic Management Platform
           </p>
         </div>
 
-        {/* Card */}
-        <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-xl shadow-slate-100/10">
-          {/* Mode Switcher: Sign In vs Register */}
-          <div className="flex border border-slate-200 rounded-2xl p-1 bg-slate-50 mb-6">
+        {/* Auth Card */}
+        <div className="bg-white rounded-3xl p-5 sm:p-8 shadow-2xl border border-slate-100 relative">
+          {/* Mode Switcher: Login vs Register */}
+          <div className="flex border-b border-slate-100 pb-4 mb-4 sm:mb-5">
             <button
               type="button"
               onClick={() => { setAuthMode('login'); setError(''); setSuccessMsg(''); }}
-              className={`flex-1 py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
-                authMode === 'login'
-                  ? 'bg-white text-blue-700 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-900'
+              className={`flex-1 pb-2 text-center text-xs sm:text-sm font-extrabold transition-all cursor-pointer border-b-2 ${
+                authMode === 'login' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
               Sign In
             </button>
             <button
               type="button"
-              onClick={() => {
-                setAuthMode('register');
-                setError('');
-                setSuccessMsg('');
-                if (selectedRole === 'admin') setSelectedRole('student');
-              }}
-              className={`flex-1 py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
-                authMode === 'register'
-                  ? 'bg-white text-blue-700 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-900'
+              onClick={() => { setAuthMode('register'); setError(''); setSuccessMsg(''); }}
+              className={`flex-1 pb-2 text-center text-xs sm:text-sm font-extrabold transition-all cursor-pointer border-b-2 ${
+                authMode === 'register' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
             >
-              Create Account
+              Register Account
             </button>
           </div>
 
-          <h2 className="text-2xl font-black text-slate-800 text-center lg:text-left font-heading">
-            {authMode === 'login' ? 'Welcome Back' : 'Create New Account'}
-          </h2>
-          <p className="mt-1 text-xs text-slate-400 text-center lg:text-left font-medium">
-            {authMode === 'login'
-              ? 'Select your role and sign in with email and password'
-              : 'Register your account in the permanent database'}
-          </p>
-
-          {/* ── Role Selector Cards ── */}
-          <div className={`grid gap-3 mt-6 ${authMode === 'login' ? 'grid-cols-3' : 'grid-cols-2'}`}>
-            {(authMode === 'login' ? roles : roles.filter(r => r.id !== 'admin')).map((role) => {
-              const isActive = selectedRole === role.id;
-              return (
-                <button
-                  key={role.id}
-                  type="button"
-                  onClick={() => handleRoleChange(role.id)}
-                  className={`
-                    relative flex flex-col items-center gap-1.5 rounded-2xl border-2 py-3 px-2
-                    transition-all duration-300 cursor-pointer focus:outline-none
-                    ${
-                      isActive
-                        ? 'border-blue-600 bg-blue-50/50 shadow-md shadow-blue-100/40 text-blue-700'
-                        : 'border-slate-150 bg-slate-50/50 hover:border-blue-200 hover:bg-blue-50/20 text-slate-600'
-                    }
-                  `}
-                >
-                  <span className="text-2xl">{role.icon}</span>
-                  <span className="text-[11px] font-extrabold">{role.label}</span>
-                  {isActive && (
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
-                  )}
-                </button>
-              );
-            })}
+          {/* Role Selection Tabs */}
+          <div>
+            <label className="block text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+              Select User Role
+            </label>
+            <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+              {roles.map((r) => {
+                const isSelected = selectedRole === r.id;
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => handleRoleChange(r.id)}
+                    className={`
+                      flex flex-col items-center justify-center py-2 sm:py-2.5 px-1 sm:px-2 rounded-xl text-center transition-all cursor-pointer min-h-[48px]
+                      ${
+                        isSelected
+                          ? 'bg-blue-50/80 border-2 border-blue-600 text-blue-900 shadow-sm'
+                          : 'bg-slate-50 border border-slate-200/70 text-slate-600 hover:bg-slate-100/70'
+                      }
+                    `}
+                  >
+                    <span className="text-base sm:text-lg mb-0.5">{r.icon}</span>
+                    <span className="text-[11px] sm:text-xs font-bold leading-tight">{r.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          {/* ── Sign In Form (Email + Password for ALL roles) ── */}
           {authMode === 'login' ? (
-            <form onSubmit={handleLoginSubmit} className="mt-6 space-y-4">
-              {/* Role badge */}
-              <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-xl">
-                    {selectedRole === 'student' ? '🎓' : selectedRole === 'teacher' ? '👨‍🏫' : '🔑'}
-                  </span>
-                  <div>
-                    <p className="text-xs font-bold text-slate-800">
-                      {selectedRole === 'student' ? 'Student Portal Login' : selectedRole === 'teacher' ? 'Teacher Portal Login' : 'Admin Portal Login'}
-                    </p>
-                    <p className="text-[10px] text-slate-500">
-                      {selectedRole === 'student' 
-                        ? 'Enter your student email or USN and password'
-                        : selectedRole === 'teacher'
-                        ? 'Enter your registered teacher email and password'
-                        : 'Sign in with administrator credentials'}
-                    </p>
-                  </div>
-                </div>
-                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                  {selectedRole}
-                </span>
-              </div>
-
-              {/* Email / USN Input */}
-              <div className="space-y-1.5">
-                <label htmlFor="login-email" className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  {selectedRole === 'student' ? 'Student Email or USN / Roll No' : 'Email Address'}
+            /* ── Login Form (Quick Credentials Completely Removed) ── */
+            <form onSubmit={handleLoginSubmit} className="mt-5 space-y-4">
+              {/* Email / Identifier */}
+              <div className="space-y-1">
+                <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  Email Address {selectedRole === 'student' && '/ College USN'}
                 </label>
-                <div className="relative">
-                  <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
-                    <svg className="h-4.5 w-4.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
-                    </svg>
-                  </div>
-                  <input
-                    id="login-email"
-                    type="text"
-                    placeholder={
-                      selectedRole === 'student'
-                        ? 'e.g. suhas123@gmail.com or 123'
-                        : selectedRole === 'teacher'
-                        ? 'e.g. teach1@gmail.com'
-                        : 'e.g. admin@summit.edu'
-                    }
-                    value={email}
-                    onChange={(e) => {
-                      setEmail(e.target.value);
-                      setError('');
-                    }}
-                    required
-                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2.5 pl-10 pr-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10 focus:outline-none transition-all text-sm font-medium"
-                  />
-                </div>
+                <input
+                  type="text"
+                  placeholder={selectedRole === 'student' ? 'e.g. student@gmail.com or USN' : 'e.g. name@gmail.com'}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2.5 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs sm:text-sm font-medium min-h-[44px]"
+                />
               </div>
 
               {/* Password */}
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <div className="flex justify-between items-center">
-                  <label htmlFor="login-password" className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    Password / Access Key
+                  <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                    Password
                   </label>
                   <button
                     type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="text-[11px] font-bold text-blue-600 hover:text-blue-800"
+                    onClick={() => {
+                      setForgotEmail(email);
+                      setForgotRole(selectedRole);
+                      setForgotStep(1);
+                      setError('');
+                      setShowForgotModal(true);
+                    }}
+                    className="text-[11px] font-bold text-blue-600 hover:underline cursor-pointer"
                   >
-                    {showPassword ? 'Hide' : 'Show'}
+                    Forgot Password?
                   </button>
                 </div>
                 <div className="relative">
-                  <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
-                    <svg className="h-4.5 w-4.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                    </svg>
-                  </div>
                   <input
-                    id="login-password"
                     type={showPassword ? 'text' : 'password'}
-                    placeholder="••••••••"
+                    placeholder="Enter your account password"
                     value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value);
-                      setError('');
-                    }}
+                    onChange={(e) => setPassword(e.target.value)}
                     required
-                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2.5 pl-10 pr-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10 focus:outline-none transition-all text-sm font-medium"
+                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2.5 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs sm:text-sm font-medium pr-10 min-h-[44px]"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-semibold cursor-pointer p-1"
+                  >
+                    {showPassword ? 'Hide' : 'Show'}
+                  </button>
                 </div>
               </div>
 
               {/* Error message */}
               {error && (
                 <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700 font-semibold animate-fadeIn">
-                  <div className="flex items-start gap-2">
-                    <span className="text-base leading-none">⚠️</span>
-                    <div className="flex-1">
-                      <p>{error}</p>
-                      {error.includes('No') && error.includes('found') && selectedRole !== 'admin' && (
-                        <button
-                          type="button"
-                          onClick={() => { setAuthMode('register'); setError(''); }}
-                          className="mt-1 text-blue-700 underline font-bold cursor-pointer"
-                        >
-                          Click here to create a new account with this email
-                        </button>
-                      )}
-                    </div>
-                  </div>
+                  <p className="flex items-center gap-1.5">
+                    <span>⚠️</span>
+                    <span>{error}</span>
+                  </p>
                 </div>
               )}
 
@@ -360,8 +405,8 @@ export default function LoginPage() {
                 type="submit"
                 disabled={isLoading}
                 className={`
-                  w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-extrabold text-white
-                  transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 cursor-pointer shadow-md
+                  w-full flex items-center justify-center gap-2 rounded-xl py-3 text-xs sm:text-sm font-extrabold text-white
+                  transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 cursor-pointer shadow-md min-h-[46px]
                   ${
                     isLoading
                       ? 'bg-slate-400 cursor-not-allowed'
@@ -370,13 +415,7 @@ export default function LoginPage() {
                 `}
               >
                 {isLoading ? (
-                  <>
-                    <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                    </svg>
-                    Verifying Credentials…
-                  </>
+                  <span>Verifying Credentials…</span>
                 ) : (
                   <>
                     <span>Sign In as {selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)}</span>
@@ -388,11 +427,11 @@ export default function LoginPage() {
               </button>
             </form>
           ) : (
-            /* ── Register Form ── */
-            <form onSubmit={handleRegisterSubmit} className="mt-6 space-y-4">
+            /* ── Register Form with Real Email Verification & Strong Password Validation ── */
+            <form onSubmit={handleRegisterSubmit} className="mt-5 space-y-3.5">
               {/* Full Name */}
               <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                   Full Name
                 </label>
                 <input
@@ -401,31 +440,31 @@ export default function LoginPage() {
                   value={regName}
                   onChange={(e) => setRegName(e.target.value)}
                   required
-                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
+                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs sm:text-sm font-medium min-h-[44px]"
                 />
               </div>
 
               {/* Email */}
               <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  Email Address
+                <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                  Valid Email Address (Verification Code will be sent)
                 </label>
                 <input
                   type="email"
-                  placeholder="e.g. suhas123@gmail.com"
+                  placeholder="e.g. yourname@gmail.com"
                   value={regEmail}
                   onChange={(e) => setRegEmail(e.target.value)}
                   required
-                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
+                  className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs sm:text-sm font-medium min-h-[44px]"
                 />
               </div>
 
               {/* Role Specific Registration Fields */}
               {selectedRole === 'student' && (
                 <>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <div className="space-y-1">
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                         USN / Roll No
                       </label>
                       <input
@@ -434,17 +473,17 @@ export default function LoginPage() {
                         value={regUsn}
                         onChange={(e) => setRegUsn(e.target.value)}
                         required
-                        className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-mono font-medium"
+                        className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs sm:text-sm font-mono font-medium min-h-[44px]"
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                        Section
+                      <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                        Class Section
                       </label>
                       <select
                         value={regSectionId}
                         onChange={(e) => setRegSectionId(e.target.value)}
-                        className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
+                        className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none text-xs sm:text-sm font-medium min-h-[44px]"
                       >
                         {sections.map((s) => (
                           <option key={s.id} value={s.id}>
@@ -455,38 +494,39 @@ export default function LoginPage() {
                     </div>
                   </div>
 
-                  {/* Parent Details */}
-                  <div className="space-y-1">
-                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                      Parent's Full Name
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Mr. Rajesh Sharma"
-                      value={regParentName}
-                      onChange={(e) => setRegParentName(e.target.value)}
-                      className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                      Parent's WhatsApp Number
-                    </label>
-                    <input
-                      type="tel"
-                      placeholder="e.g. +91 9353591776"
-                      value={regParentPhone}
-                      onChange={(e) => setRegParentPhone(e.target.value)}
-                      className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
-                    />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                        Parent Full Name
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Rajesh Sharma"
+                        value={regParentName}
+                        onChange={(e) => setRegParentName(e.target.value)}
+                        className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium min-h-[44px]"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                        Parent WhatsApp No.
+                      </label>
+                      <input
+                        type="tel"
+                        placeholder="e.g. +91 9876543210"
+                        value={regParentPhone}
+                        onChange={(e) => setRegParentPhone(e.target.value)}
+                        className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium min-h-[44px]"
+                      />
+                    </div>
                   </div>
                 </>
               )}
 
               {selectedRole === 'teacher' && (
                 <div className="space-y-1">
-                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    Department
+                  <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                    Academic Department
                   </label>
                   <input
                     type="text"
@@ -494,39 +534,60 @@ export default function LoginPage() {
                     value={regDept}
                     onChange={(e) => setRegDept(e.target.value)}
                     required
-                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
+                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs sm:text-sm font-medium min-h-[44px]"
                   />
                 </div>
               )}
 
               {/* Password Fields */}
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    Password
-                  </label>
-                  <input
-                    type="password"
-                    placeholder="••••••••"
-                    value={regPassword}
-                    onChange={(e) => setRegPassword(e.target.value)}
-                    required
-                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
-                  />
+              <div className="space-y-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      Create Password
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="Min 8 chars"
+                      value={regPassword}
+                      onChange={(e) => setRegPassword(e.target.value)}
+                      required
+                      className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs sm:text-sm font-medium min-h-[44px]"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      Confirm Password
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="Repeat password"
+                      value={regConfirmPassword}
+                      onChange={(e) => setRegConfirmPassword(e.target.value)}
+                      required
+                      className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs sm:text-sm font-medium min-h-[44px]"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    Confirm
-                  </label>
-                  <input
-                    type="password"
-                    placeholder="••••••••"
-                    value={regConfirmPassword}
-                    onChange={(e) => setRegConfirmPassword(e.target.value)}
-                    required
-                    className="block w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2 px-3 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none text-xs font-medium"
-                  />
-                </div>
+
+                {/* Live Password Rules Checklist */}
+                {regPassword.length > 0 && (
+                  <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-[10px] space-y-1 animate-fadeIn">
+                    <p className="font-bold text-slate-600 mb-1">Strong Password Requirements:</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                      {regPwdRules.rules.map((r) => (
+                        <div key={r.id} className={`flex items-center gap-1.5 ${r.valid ? 'text-emerald-700 font-bold' : 'text-slate-400'}`}>
+                          <span>{r.valid ? '✓' : '○'}</span>
+                          <span>{r.label}</span>
+                        </div>
+                      ))}
+                      <div className={`flex items-center gap-1.5 ${regPassword && regPassword === regConfirmPassword ? 'text-emerald-700 font-bold' : 'text-slate-400'}`}>
+                        <span>{regPassword && regPassword === regConfirmPassword ? '✓' : '○'}</span>
+                        <span>Passwords match</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Error message */}
@@ -543,71 +604,191 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={isLoading}
-                className={`
-                  w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-extrabold text-white
-                  transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500/20 cursor-pointer shadow-md
-                  ${
-                    isLoading
-                      ? 'bg-slate-400 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800'
-                  }
-                `}
+                className="w-full flex items-center justify-center gap-2 rounded-xl py-3 text-xs sm:text-sm font-extrabold text-white bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 transition-all shadow-md min-h-[46px] cursor-pointer"
               >
-                {isLoading ? 'Creating Account…' : 'Register Account'}
+                {isLoading ? 'Sending Verification Code…' : 'Verify Email & Create Account'}
               </button>
             </form>
           )}
-
-          {/* Quick Demo Credentials Toggle */}
-          <div className="mt-6 pt-4 border-t border-slate-100 text-center">
-            <button
-              type="button"
-              onClick={() => setShowDemoLogins(!showDemoLogins)}
-              className="text-[11px] font-bold text-slate-500 hover:text-blue-600 transition-colors cursor-pointer inline-flex items-center gap-1"
-            >
-              <span>{showDemoLogins ? '▼ Hide Quick Credentials' : '▶ Show Quick Credentials'}</span>
-            </button>
-
-            {showDemoLogins && (
-              <div className="mt-3 bg-slate-50 rounded-2xl p-3 border border-slate-200 text-left space-y-2 text-[11px] animate-fadeIn">
-                <div 
-                  onClick={() => { setSelectedRole('student'); setEmail('suhas123@gmail.com'); setPassword('suhas'); setAuthMode('login'); }}
-                  className="p-1.5 hover:bg-white rounded-lg cursor-pointer transition-colors"
-                >
-                  <p className="font-bold text-slate-800">🎓 Student: <span className="font-mono text-blue-600">suhas123@gmail.com</span> (USN: 123)</p>
-                  <p className="text-[10px] text-slate-500">Password: <span className="font-mono">suhas</span></p>
-                </div>
-                <div 
-                  onClick={() => { setSelectedRole('student'); setEmail('stu1@gmail.com'); setPassword('pass'); setAuthMode('login'); }}
-                  className="p-1.5 hover:bg-white rounded-lg cursor-pointer transition-colors"
-                >
-                  <p className="font-bold text-slate-800">🎓 Student: <span className="font-mono text-blue-600">stu1@gmail.com</span> (USN: 001)</p>
-                  <p className="text-[10px] text-slate-500">Password: <span className="font-mono">pass</span> • Face Enrolled</p>
-                </div>
-                <div 
-                  onClick={() => { setSelectedRole('teacher'); setEmail('teach1@gmail.com'); setPassword('pass'); setAuthMode('login'); }}
-                  className="p-1.5 hover:bg-white rounded-lg cursor-pointer transition-colors"
-                >
-                  <p className="font-bold text-slate-800">👨‍🏫 Teacher: <span className="font-mono text-blue-600">teach1@gmail.com</span></p>
-                  <p className="text-[10px] text-slate-500">Password: <span className="font-mono">pass</span></p>
-                </div>
-                <div 
-                  onClick={() => { setSelectedRole('admin'); setEmail('admin@summit.edu'); setPassword('admin123'); setAuthMode('login'); }}
-                  className="p-1.5 hover:bg-white rounded-lg cursor-pointer transition-colors"
-                >
-                  <p className="font-bold text-slate-800">🔑 Admin: <span className="font-mono text-blue-600">admin@summit.edu</span></p>
-                  <p className="text-[10px] text-slate-500">Password: <span className="font-mono">admin123</span></p>
-                </div>
-              </div>
-            )}
-          </div>
         </div>
 
         {/* Footer */}
-        <p className="text-center text-[11px] text-slate-500 mt-6">
+        <p className="text-center text-[10px] sm:text-[11px] text-slate-500 mt-5 sm:mt-6">
           SummitAttend Biometric Security • Powered by OpenCV Deep Learning & Blockchain
         </p>
       </div>
+
+      {/* ── Modal: Email Verification OTP Code ── */}
+      {showOtpModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-md animate-fadeIn">
+          <div className="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl border border-slate-100 text-center relative">
+            <button
+              onClick={() => setShowOtpModal(false)}
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold text-xs cursor-pointer"
+            >
+              ✕
+            </button>
+
+            <span className="text-3xl block mb-2">✉️</span>
+            <h3 className="font-extrabold text-slate-900 text-base">Verify Email Address</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              We sent a 6-digit confirmation code to <span className="font-bold text-slate-800">{otpSentEmail}</span>.
+            </p>
+
+            {devOtpHint && (
+              <div className="my-3 p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 font-bold">
+                🔑 Verification Code: <span className="font-mono text-base tracking-widest text-blue-700">{devOtpHint}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleVerifyOtpAndCreateAccount} className="mt-4 space-y-3">
+              <input
+                type="text"
+                maxLength={6}
+                placeholder="Enter 6-digit OTP"
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                required
+                className="w-full text-center tracking-widest font-mono text-xl font-bold py-2.5 border-2 border-slate-300 rounded-xl focus:border-blue-600 focus:outline-none min-h-[46px]"
+              />
+
+              {error && <p className="text-xs text-rose-600 font-bold">{error}</p>}
+
+              <button
+                type="submit"
+                disabled={isLoading || otpCode.length < 6}
+                className="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md transition-all cursor-pointer disabled:opacity-50 min-h-[44px]"
+              >
+                {isLoading ? 'Verifying Code…' : 'Confirm & Activate Account'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Forgot Password ── */}
+      {showForgotModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-md animate-fadeIn">
+          <div className="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl border border-slate-100 relative">
+            <button
+              onClick={() => { setShowForgotModal(false); setError(''); }}
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold text-xs cursor-pointer"
+            >
+              ✕
+            </button>
+
+            <span className="text-3xl block mb-2 text-center">🔐</span>
+            <h3 className="font-extrabold text-slate-900 text-base text-center">Password Recovery</h3>
+            <p className="text-xs text-slate-500 mt-1 text-center">
+              {forgotStep === 1 ? 'Enter your registered email to receive a password reset code.' : 'Enter the code and create a new secure password.'}
+            </p>
+
+            {forgotStep === 1 ? (
+              <form onSubmit={handleForgotSendOtp} className="mt-4 space-y-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Your Role</label>
+                  <select
+                    value={forgotRole}
+                    onChange={(e) => setForgotRole(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs font-bold text-slate-800 focus:outline-none min-h-[40px]"
+                  >
+                    <option value="student">Student</option>
+                    <option value="teacher">Teacher</option>
+                    <option value="admin">Administrator</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Registered Email</label>
+                  <input
+                    type="email"
+                    placeholder="e.g. name@gmail.com"
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value)}
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-900 focus:border-blue-600 focus:outline-none min-h-[44px]"
+                  />
+                </div>
+
+                {error && <p className="text-xs text-rose-600 font-bold">{error}</p>}
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-xs rounded-xl shadow-md cursor-pointer min-h-[44px]"
+                >
+                  {isLoading ? 'Dispatching Code…' : 'Send Reset Code'}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleForgotResetPassword} className="mt-4 space-y-3">
+                {forgotDevOtpHint && (
+                  <div className="p-2 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 font-bold text-center">
+                    🔑 Reset Code: <span className="font-mono text-sm tracking-widest text-blue-700">{forgotDevOtpHint}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">6-Digit Reset Code</label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    placeholder="Enter code"
+                    value={forgotOtp}
+                    onChange={(e) => setForgotOtp(e.target.value.replace(/\D/g, ''))}
+                    required
+                    className="w-full text-center font-mono font-bold tracking-widest rounded-xl border border-slate-200 bg-slate-50 p-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none min-h-[44px]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">New Strong Password</label>
+                  <input
+                    type="password"
+                    placeholder="Min 8 chars, Aa1@ rules"
+                    value={forgotNewPassword}
+                    onChange={(e) => setForgotNewPassword(e.target.value)}
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-900 focus:border-blue-600 focus:outline-none min-h-[44px]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Confirm New Password</label>
+                  <input
+                    type="password"
+                    placeholder="Repeat new password"
+                    value={forgotConfirmPassword}
+                    onChange={(e) => setForgotConfirmPassword(e.target.value)}
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs text-slate-900 focus:border-blue-600 focus:outline-none min-h-[44px]"
+                  />
+                </div>
+
+                {forgotNewPassword.length > 0 && (
+                  <div className="p-2 bg-slate-50 rounded-xl text-[10px] space-y-0.5 border border-slate-200">
+                    {forgotPwdRules.rules.map((r) => (
+                      <div key={r.id} className={r.valid ? 'text-emerald-700 font-bold' : 'text-slate-400'}>
+                        {r.valid ? '✓' : '○'} {r.label}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {error && <p className="text-xs text-rose-600 font-bold">{error}</p>}
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-xs rounded-xl shadow-md cursor-pointer min-h-[44px]"
+                >
+                  {isLoading ? 'Updating Password…' : 'Save New Password & Sign In'}
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

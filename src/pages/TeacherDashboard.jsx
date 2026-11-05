@@ -396,23 +396,23 @@ export default function TeacherDashboard() {
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-16">
       {/* ── Top Navbar ── */}
       <nav className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+          <div className="flex flex-wrap sm:flex-nowrap justify-between items-center py-2.5 sm:py-0 sm:h-16 gap-2">
             <div className="flex items-center gap-2">
-              <SummitLogo className="w-10 h-10" />
+              <SummitLogo className="w-8 h-8 sm:w-10 sm:h-10 shrink-0" />
               <div className="leading-none">
-                <span className="text-lg font-black tracking-wide bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">SummitAttend</span>
+                <span className="text-base sm:text-lg font-black tracking-wide bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">SummitAttend</span>
                 <p className="text-[8px] uppercase font-bold tracking-widest text-slate-400">Faculty Portal</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3">
               <div className="text-right hidden sm:block">
-                <p className="text-xs font-semibold text-slate-500">Faculty Portal</p>
-                <p className="text-sm font-bold text-slate-800">{currentUser.name}</p>
+                <p className="text-[10px] font-semibold text-slate-500">Faculty Member</p>
+                <p className="text-xs font-bold text-slate-800">{currentUser.name}</p>
               </div>
               <button
                 onClick={navigate.bind(null, '/')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-xs font-semibold rounded-lg bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-colors shadow-sm cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 sm:px-3 py-1.5 border border-slate-200 text-xs font-semibold rounded-lg bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-colors shadow-sm cursor-pointer"
               >
                 Logout
               </button>
@@ -438,10 +438,10 @@ export default function TeacherDashboard() {
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex border border-slate-200 bg-white p-1 rounded-xl max-w-lg shadow-sm">
+        <div className="flex border border-slate-200 bg-white p-1 rounded-xl max-w-lg shadow-sm overflow-x-auto no-scrollbar gap-1">
           <button
             onClick={() => setActiveTab('live')}
-            className={`flex-1 py-2 text-center text-xs font-bold rounded-lg transition-all cursor-pointer ${
+            className={`whitespace-nowrap flex-1 py-2 px-3 text-center text-xs font-bold rounded-lg transition-all shrink-0 cursor-pointer ${
               activeTab === 'live'
                 ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm'
                 : 'text-slate-500 hover:text-slate-800'
@@ -451,7 +451,7 @@ export default function TeacherDashboard() {
           </button>
           <button
             onClick={() => setActiveTab('history')}
-            className={`flex-1 py-2 text-center text-xs font-bold rounded-lg transition-all cursor-pointer ${
+            className={`whitespace-nowrap flex-1 py-2 px-3 text-center text-xs font-bold rounded-lg transition-all shrink-0 cursor-pointer ${
               activeTab === 'history'
                 ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm'
                 : 'text-slate-500 hover:text-slate-800'
@@ -461,7 +461,7 @@ export default function TeacherDashboard() {
           </button>
           <button
             onClick={() => setActiveTab('marks')}
-            className={`flex-1 py-2 text-center text-xs font-bold rounded-lg transition-all cursor-pointer ${
+            className={`whitespace-nowrap flex-1 py-2 px-3 text-center text-xs font-bold rounded-lg transition-all shrink-0 cursor-pointer ${
               activeTab === 'marks'
                 ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm'
                 : 'text-slate-500 hover:text-slate-800'
@@ -1101,7 +1101,7 @@ export default function TeacherDashboard() {
 
               {/* Student Marks Upload Table */}
               <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
+                <div className="hidden md:block overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
@@ -1239,6 +1239,118 @@ export default function TeacherDashboard() {
                       )}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Mobile Examination Marks Cards for Faculty */}
+                <div className="md:hidden divide-y divide-slate-100">
+                  {enrolledStudents.length === 0 ? (
+                    <div className="p-6 text-center text-slate-400 font-semibold text-xs">
+                      No students currently registered in this section.
+                    </div>
+                  ) : (
+                    enrolledStudents.map((st) => {
+                      const existing = (marks || []).find(m => m.studentId === st.id && m.subjectId === activeSubId);
+                      const draft = teacherMarksDraft[st.id] || {};
+
+                      const c1Str = draft.cie1 !== undefined ? draft.cie1 : (existing?.cie1 !== undefined && existing?.cie1 !== null ? String(existing.cie1) : '');
+                      const c2Str = draft.cie2 !== undefined ? draft.cie2 : (existing?.cie2 !== undefined && existing?.cie2 !== null ? String(existing.cie2) : '');
+                      const seeStr = draft.see !== undefined ? draft.see : (existing?.see !== undefined && existing?.see !== null ? String(existing.see) : '');
+
+                      const n1 = c1Str !== '' ? parseFloat(c1Str) : null;
+                      const n2 = c2Str !== '' ? parseFloat(c2Str) : null;
+                      const nSee = seeStr !== '' ? parseFloat(seeStr) : null;
+
+                      const hasAny = n1 !== null || n2 !== null || nSee !== null;
+                      const total = (n1 || 0) + (n2 || 0) + (nSee || 0);
+                      const pct = Math.round((total / 200) * 100);
+
+                      let grade = 'Pending';
+                      let gradeBadge = 'bg-slate-100 text-slate-600 border-slate-200';
+                      if (n1 !== null && n2 !== null && nSee !== null) {
+                        if (pct >= 75) {
+                          grade = 'Distinction';
+                          gradeBadge = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                        } else if (pct >= 60) {
+                          grade = 'First Class';
+                          gradeBadge = 'bg-blue-50 text-blue-700 border-blue-200';
+                        } else if (pct >= 50) {
+                          grade = 'Second Class';
+                          gradeBadge = 'bg-amber-50 text-amber-700 border-amber-200';
+                        } else {
+                          grade = 'Fail';
+                          gradeBadge = 'bg-rose-50 text-rose-700 border-rose-200';
+                        }
+                      }
+
+                      return (
+                        <div key={`m_faculty_card_${st.id}`} className="p-4 space-y-3 bg-white">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="font-extrabold text-slate-900 text-sm">{st.name}</p>
+                              <span className="font-mono text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                                USN: {st.usn}
+                              </span>
+                            </div>
+                            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border shrink-0 ${gradeBadge}`}>
+                              {grade}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-2xl">
+                            <div>
+                              <label className="block text-[9px] font-bold text-slate-400 uppercase text-center mb-1">CIE 1 (50)</label>
+                              <input
+                                type="number"
+                                min="0"
+                                max="50"
+                                step="0.5"
+                                disabled={isSubjectLocked}
+                                placeholder="0-50"
+                                value={c1Str}
+                                onChange={(e) => handleMarksInputChange(st.id, 'cie1', e.target.value)}
+                                className="w-full min-h-[44px] text-center font-bold text-slate-900 border border-slate-300 rounded-xl text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[9px] font-bold text-slate-400 uppercase text-center mb-1">CIE 2 (50)</label>
+                              <input
+                                type="number"
+                                min="0"
+                                max="50"
+                                step="0.5"
+                                disabled={isSubjectLocked}
+                                placeholder="0-50"
+                                value={c2Str}
+                                onChange={(e) => handleMarksInputChange(st.id, 'cie2', e.target.value)}
+                                className="w-full min-h-[44px] text-center font-bold text-slate-900 border border-slate-300 rounded-xl text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[9px] font-bold text-slate-400 uppercase text-center mb-1">SEE (100)</label>
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.5"
+                                disabled={isSubjectLocked}
+                                placeholder="0-100"
+                                value={seeStr}
+                                onChange={(e) => handleMarksInputChange(st.id, 'see', e.target.value)}
+                                className="w-full min-h-[44px] text-center font-bold text-slate-900 border border-slate-300 rounded-xl text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-100"
+                              />
+                            </div>
+                          </div>
+
+                          {hasAny && (
+                            <div className="flex justify-between items-center text-xs px-1 text-slate-600 font-bold">
+                              <span>Total Score:</span>
+                              <span className="font-black text-slate-900">{total} / 200 ({pct}%)</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             </div>

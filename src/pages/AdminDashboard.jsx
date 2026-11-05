@@ -32,9 +32,17 @@ export default function AdminDashboard() {
     saveMarks,
     deleteMark,
     toggleMarksLock,
+    adminToggleUserStatus,
+    adminRequestUserReset,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState('teachers'); // teachers | students | sections | subjects | report | marks
+  const [activeTab, setActiveTab] = useState('teachers'); // teachers | students | sections | subjects | report | marks | users
+  // User Security & Access States
+  const [userRoleFilter, setUserRoleFilter] = useState('all');
+  const [userStatusFilter, setUserStatusFilter] = useState('all');
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userActionToast, setUserActionToast] = useState('');
+  const [isProcessingUserAction, setIsProcessingUserAction] = useState(false);
   const [adminMarksSubjectFilter, setAdminMarksSubjectFilter] = useState('');
   const [adminMarksSectionFilter, setAdminMarksSectionFilter] = useState('');
   const [adminMarksSearch, setAdminMarksSearch] = useState('');
@@ -324,6 +332,47 @@ export default function AdminDashboard() {
     setEditingStudent(null);
   };
 
+  // ─── Actions: User Security & Account Management ───
+  const handleToggleUserAccount = async (role, userId, currentActive) => {
+    const nextStatus = !currentActive;
+    const actionWord = nextStatus ? 'activate' : 'disable';
+    if (!window.confirm(`Are you sure you want to ${actionWord} this account?`)) {
+      return;
+    }
+    setIsProcessingUserAction(true);
+    try {
+      if (adminToggleUserStatus) {
+        await adminToggleUserStatus(role, userId, nextStatus);
+      }
+      setUserActionToast(`Account successfully ${nextStatus ? 'activated' : 'disabled'}!`);
+      setTimeout(() => setUserActionToast(''), 4000);
+    } catch (err) {
+      alert("Failed to change account status: " + err.message);
+    } finally {
+      setIsProcessingUserAction(false);
+    }
+  };
+
+  const handleAdminSendResetOtp = async (role, userId, email) => {
+    if (!window.confirm(`Send password reset OTP email to ${email}?\n\nThe user will receive a 6-digit verification code to set a new strong password.`)) {
+      return;
+    }
+    setIsProcessingUserAction(true);
+    try {
+      if (adminRequestUserReset) {
+        const res = await adminRequestUserReset(role, userId, email);
+        setUserActionToast(`✅ Reset OTP sent to ${email}! User can now set their new password.`);
+      } else {
+        setUserActionToast(`✅ Reset request initiated for ${email}.`);
+      }
+      setTimeout(() => setUserActionToast(''), 5000);
+    } catch (err) {
+      alert("Failed to initiate password reset: " + err.message);
+    } finally {
+      setIsProcessingUserAction(false);
+    }
+  };
+
   const handleClearDatabase = async () => {
     if (!window.confirm("Are you sure you want to clear all students, teachers, and attendance from the database? This cannot be undone.")) {
       return;
@@ -379,31 +428,32 @@ export default function AdminDashboard() {
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-16">
       {/* ── Top Navbar ── */}
       <nav className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+          <div className="flex flex-wrap sm:flex-nowrap justify-between items-center py-2.5 sm:py-0 sm:h-16 gap-2">
             <div className="flex items-center gap-2">
-              <SummitLogo className="w-10 h-10" />
+              <SummitLogo className="w-8 h-8 sm:w-10 sm:h-10 shrink-0" />
               <div className="leading-none">
-                <span className="text-lg font-black tracking-wide bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">SummitAttend</span>
+                <span className="text-base sm:text-lg font-black tracking-wide bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">SummitAttend</span>
                 <p className="text-[8px] uppercase font-bold tracking-widest text-slate-400">System Admin</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 sm:gap-3 flex-wrap justify-end">
               <button
                 onClick={handleClearDatabase}
                 disabled={isClearingDb}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-rose-200 text-xs font-bold rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100 transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 border border-rose-200 text-[11px] sm:text-xs font-bold rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100 transition-colors shadow-sm cursor-pointer disabled:opacity-50"
                 title="Wipe mock records and start fresh"
               >
-                {isClearingDb ? 'Clearing...' : '🗑️ Clear Database'}
+                <span>🗑️</span>
+                <span>{isClearingDb ? 'Clearing...' : 'Clear DB'}</span>
               </button>
               <div className="text-right hidden sm:block">
-                <p className="text-xs font-semibold text-slate-500">System Admin</p>
-                <p className="text-sm font-bold text-slate-800">Administrator</p>
+                <p className="text-[10px] font-semibold text-slate-500">System Admin</p>
+                <p className="text-xs font-bold text-slate-800">Administrator</p>
               </div>
               <button
                 onClick={navigate.bind(null, '/')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-xs font-semibold rounded-lg bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-colors shadow-sm cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 sm:px-3 py-1.5 border border-slate-200 text-xs font-semibold rounded-lg bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-colors shadow-sm cursor-pointer"
               >
                 Logout
               </button>
@@ -422,84 +472,90 @@ export default function AdminDashboard() {
       )}
 
       {/* ── Admin Stat Cards System Monitor ── */}
-      <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 mt-6">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3.5">
-            <span className="text-2xl bg-blue-50 p-2 rounded-xl text-blue-600">📊</span>
-            <div>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Sessions</p>
-              <p className="text-lg font-black text-slate-800">{stats.totalSessions}</p>
+      <div className="max-w-7xl mx-auto w-full px-3 sm:px-6 lg:px-8 mt-4 sm:mt-6">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 sm:gap-4">
+          <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-2.5 sm:gap-3.5">
+            <span className="text-xl sm:text-2xl bg-blue-50 p-1.5 sm:p-2 rounded-xl text-blue-600 shrink-0">📊</span>
+            <div className="min-w-0">
+              <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Sessions</p>
+              <p className="text-base sm:text-lg font-black text-slate-800">{stats.totalSessions}</p>
             </div>
           </div>
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3.5">
-            <span className="text-2xl bg-indigo-50 p-2 rounded-xl text-indigo-600">👥</span>
-            <div>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Users</p>
-              <p className="text-lg font-black text-slate-800">{stats.totalUsers}</p>
+          <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-2.5 sm:gap-3.5">
+            <span className="text-xl sm:text-2xl bg-indigo-50 p-1.5 sm:p-2 rounded-xl text-indigo-600 shrink-0">👥</span>
+            <div className="min-w-0">
+              <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Total Users</p>
+              <p className="text-base sm:text-lg font-black text-slate-800">{stats.totalUsers}</p>
             </div>
           </div>
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3.5">
-            <span className="text-2xl bg-emerald-50 p-2 rounded-xl text-emerald-600">🔗</span>
-            <div>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Blockchain Tx</p>
-              <p className="text-lg font-black text-slate-800">{stats.totalTransactions}</p>
+          <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-2.5 sm:gap-3.5">
+            <span className="text-xl sm:text-2xl bg-emerald-50 p-1.5 sm:p-2 rounded-xl text-emerald-600 shrink-0">🔗</span>
+            <div className="min-w-0">
+              <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Ledger Tx</p>
+              <p className="text-base sm:text-lg font-black text-slate-800">{stats.totalTransactions}</p>
             </div>
           </div>
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3.5">
-            <span className="text-2xl bg-amber-50 p-2 rounded-xl text-amber-600">⚡</span>
-            <div>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Active Today</p>
-              <p className="text-lg font-black text-slate-800">{stats.activeToday}</p>
+          <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-2.5 sm:gap-3.5">
+            <span className="text-xl sm:text-2xl bg-amber-50 p-1.5 sm:p-2 rounded-xl text-amber-600 shrink-0">⚡</span>
+            <div className="min-w-0">
+              <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Active Today</p>
+              <p className="text-base sm:text-lg font-black text-slate-800">{stats.activeToday}</p>
             </div>
           </div>
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-3.5 col-span-2 md:col-span-1">
-            <span className="text-2xl bg-rose-50 p-2 rounded-xl text-rose-600">💚</span>
-            <div>
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Node Health</p>
-              <p className="text-lg font-black text-slate-800">{stats.networkHealth}%</p>
+          <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-2.5 sm:gap-3.5 col-span-2 sm:col-span-1">
+            <span className="text-xl sm:text-2xl bg-rose-50 p-1.5 sm:p-2 rounded-xl text-rose-600 shrink-0">💚</span>
+            <div className="min-w-0">
+              <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Node Health</p>
+              <p className="text-base sm:text-lg font-black text-slate-800">{stats.networkHealth}%</p>
             </div>
           </div>
         </div>
       </div>
 
       {/* ── Switcher Navigation Tabs ── */}
-      <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 mt-6">
-        <div className="flex border-b border-slate-200 bg-white rounded-xl p-1 shadow-sm gap-1 overflow-x-auto">
+      <div className="max-w-7xl mx-auto w-full px-3 sm:px-6 lg:px-8 mt-4 sm:mt-6">
+        <div className="flex border-b border-slate-200 bg-white rounded-xl p-1 shadow-sm gap-1 overflow-x-auto no-scrollbar">
           <button
             onClick={() => { setActiveTab('teachers'); setInspectingSectionId(''); }}
-            className={`flex-1 min-w-[120px] py-3 text-center text-sm font-semibold rounded-lg transition-all cursor-pointer ${activeTab === 'teachers' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
+            className={`whitespace-nowrap px-3 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${activeTab === 'teachers' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
           >
-            👨‍🏫 Teachers & Subjects
+            👨‍🏫 Faculty & Subjects
           </button>
           <button
             onClick={() => { setActiveTab('students'); setInspectingSectionId(''); }}
-            className={`flex-1 min-w-[120px] py-3 text-center text-sm font-semibold rounded-lg transition-all cursor-pointer ${activeTab === 'students' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
+            className={`whitespace-nowrap px-3 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${activeTab === 'students' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
           >
             🎓 Student Roster
           </button>
           <button
             onClick={() => { setActiveTab('sections'); setInspectingSectionId(''); }}
-            className={`flex-1 min-w-[120px] py-3 text-center text-sm font-semibold rounded-lg transition-all cursor-pointer ${activeTab === 'sections' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
+            className={`whitespace-nowrap px-3 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${activeTab === 'sections' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
           >
             🏫 Sections & Years
           </button>
           <button
             onClick={() => { setActiveTab('subjects'); setInspectingSectionId(''); }}
-            className={`flex-1 min-w-[120px] py-3 text-center text-sm font-semibold rounded-lg transition-all cursor-pointer ${activeTab === 'subjects' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
+            className={`whitespace-nowrap px-3 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${activeTab === 'subjects' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
           >
-            📚 Subjects Syllabus
+            📚 Syllabus
           </button>
           <button
             onClick={() => { setActiveTab('report'); setInspectingSectionId(''); }}
-            className={`flex-1 min-w-[120px] py-3 text-center text-sm font-semibold rounded-lg transition-all cursor-pointer ${activeTab === 'report' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
+            className={`whitespace-nowrap px-3 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${activeTab === 'report' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
           >
             📋 Audit Report
           </button>
           <button
             onClick={() => { setActiveTab('marks'); setInspectingSectionId(''); }}
-            className={`flex-1 min-w-[120px] py-3 text-center text-sm font-semibold rounded-lg transition-all cursor-pointer ${activeTab === 'marks' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
+            className={`whitespace-nowrap px-3 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${activeTab === 'marks' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
           >
             📊 Marks Management
+          </button>
+          <button
+            onClick={() => { setActiveTab('users'); setInspectingSectionId(''); }}
+            className={`whitespace-nowrap px-3 sm:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all shrink-0 cursor-pointer ${activeTab === 'users' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50/30'}`}
+          >
+            🔐 User Accounts & Access
           </button>
         </div>
       </div>
@@ -523,7 +579,7 @@ export default function AdminDashboard() {
             </div>
 
             <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
@@ -599,6 +655,83 @@ export default function AdminDashboard() {
                   </tbody>
                 </table>
               </div>
+
+              {/* Mobile Faculty Cards */}
+              <div className="md:hidden divide-y divide-slate-100">
+                {teachers.length === 0 ? (
+                  <div className="p-6 text-center text-slate-400 font-semibold text-xs">
+                    No faculty registered yet. Tap "+ Allow Faculty" to add a teacher.
+                  </div>
+                ) : (
+                  teachers.map((teacher) => (
+                    <div key={teacher.id} className="p-4 space-y-3 bg-white">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="font-extrabold text-slate-900 text-sm">{teacher.name}</p>
+                          <p className="text-slate-400 text-xs font-mono break-all">{teacher.email}</p>
+                        </div>
+                        <span className="bg-blue-50 text-blue-700 border border-blue-100 text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0">
+                          {teacher.department || 'Faculty'}
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5 text-xs bg-slate-50 p-2.5 rounded-xl">
+                        <div>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Assigned Subjects</span>
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {teacher.assignedSubjects?.length > 0 ? (
+                              teacher.assignedSubjects.map(subId => {
+                                const sub = subjects.find(s => s.id === subId);
+                                return (
+                                  <span key={subId} className="bg-blue-100/70 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded">
+                                    {sub ? sub.code : subId}
+                                  </span>
+                                );
+                              })
+                            ) : (
+                              <span className="text-[10px] text-slate-400 italic">None assigned</span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="pt-1.5 border-t border-slate-200/60">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Assigned Sections</span>
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {teacher.assignedSections?.length > 0 ? (
+                              teacher.assignedSections.map(secId => {
+                                const sec = sections.find(s => s.id === secId);
+                                const yearLabel = sec?.year === 1 ? '1st' : sec?.year === 2 ? '2nd' : sec?.year === 3 ? '3rd' : '4th';
+                                return (
+                                  <span key={secId} className="bg-indigo-100/70 text-indigo-700 text-[10px] font-bold px-2 py-0.5 rounded">
+                                    {sec ? `${yearLabel} Yr - ${sec.name}` : secId}
+                                  </span>
+                                );
+                              })
+                            ) : (
+                              <span className="text-[10px] text-slate-400 italic">None assigned</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                        <button
+                          onClick={() => handleOpenAssignModal(teacher)}
+                          className="flex-1 min-h-[40px] px-3 py-2 border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-xl cursor-pointer text-center"
+                        >
+                          ✏️ Assign Classes
+                        </button>
+                        <button
+                          onClick={() => deleteTeacher(teacher.id)}
+                          className="min-h-[40px] px-4 py-2 border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-xl cursor-pointer text-center"
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -606,7 +739,7 @@ export default function AdminDashboard() {
         {/* Tab 2: Manage Students */}
         {activeTab === 'students' && (
           <div className="space-y-4">
-            <div className="flex justify-between items-center">
+            <div className="flex flex-wrap sm:flex-nowrap justify-between items-center gap-2">
               <div>
                 <h2 className="text-lg font-extrabold text-slate-800">Student Roster Directory</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Control registered students, college USNs, and sections</p>
@@ -620,7 +753,7 @@ export default function AdminDashboard() {
             </div>
 
             <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
@@ -749,6 +882,117 @@ export default function AdminDashboard() {
                     )}
                   </tbody>
                 </table>
+              </div>
+
+              {/* Mobile Student Cards */}
+              <div className="md:hidden divide-y divide-slate-100">
+                {students.length === 0 ? (
+                  <div className="p-6 text-center text-slate-400 font-semibold text-xs">
+                    No students registered yet. Tap "+ Register Student" to add a student.
+                  </div>
+                ) : (
+                  students.map((student) => {
+                    const sec = sections.find(s => s.id === student.sectionId);
+                    const cleanPhone = (student.parentPhone || '').replace(/[^0-9]/g, '');
+                    const waNumber = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+                    return (
+                      <div key={student.id} className="p-4 space-y-3 bg-white">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-extrabold text-slate-900 text-sm">{student.name}</p>
+                            <p className="text-slate-400 text-xs font-mono break-all">{student.email}</p>
+                          </div>
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <span className="font-mono text-xs font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
+                              {student.usn}
+                            </span>
+                            <span className="bg-indigo-50 text-indigo-700 border border-indigo-100 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                              {sec ? `${sec.year}th Yr - ${sec.name}` : 'N/A'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Parent & WhatsApp */}
+                        <div className="bg-slate-50 rounded-xl p-2.5 text-xs flex items-center justify-between">
+                          <div>
+                            <span className="text-slate-400 text-[9px] uppercase font-bold block">Parent Contact</span>
+                            <span className="font-bold text-slate-700">{student.parentName || 'Not Set'}</span>
+                          </div>
+                          {student.parentPhone ? (
+                            <a
+                              href={`https://wa.me/${waNumber}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="px-2.5 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer"
+                            >
+                              <span>💬</span>
+                              <span className="font-mono">{student.parentPhone}</span>
+                            </a>
+                          ) : (
+                            <span className="text-[10px] text-amber-500 font-medium">No Phone</span>
+                          )}
+                        </div>
+
+                        {/* Biometric Status */}
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="text-xs font-bold text-slate-500">Face Biometric:</span>
+                          {student.faceRegistered ? (
+                            <div className="flex items-center gap-1.5">
+                              {student.faceImage ? (
+                                <img src={student.faceImage} alt="Biometric" className="w-8 h-8 rounded-full object-cover border border-emerald-500" />
+                              ) : (
+                                <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs">👤</div>
+                              )}
+                              <span className="text-[10px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
+                                ✓ Enrolled
+                              </span>
+                              <button
+                                onClick={() => handleOpenFaceEnrollModal(student)}
+                                className="px-2 py-1 text-xs text-blue-600 font-bold hover:underline cursor-pointer"
+                              >
+                                Re-scan
+                              </button>
+                              <button
+                                onClick={() => handleRemoveFace(student)}
+                                className="px-2 py-1 text-xs text-rose-600 font-bold hover:underline cursor-pointer"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 px-2 py-0.5 rounded-full uppercase">
+                                ❌ Not Enrolled
+                              </span>
+                              <button
+                                onClick={() => handleOpenFaceEnrollModal(student)}
+                                className="px-2.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold rounded-lg cursor-pointer"
+                              >
+                                📸 Enroll
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                          <button
+                            onClick={() => handleOpenEditStudentModal(student)}
+                            className="flex-1 min-h-[40px] px-3 py-2 border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-xl cursor-pointer text-center"
+                          >
+                            ✏️ Edit Parent Info
+                          </button>
+                          <button
+                            onClick={() => deleteStudent(student.id)}
+                            className="min-h-[40px] px-4 py-2 border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-xl cursor-pointer text-center"
+                          >
+                            🗑️ Delete
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>
@@ -1298,7 +1542,7 @@ export default function AdminDashboard() {
 
               {/* Marks Table */}
               <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
+                <div className="hidden md:block overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
@@ -1399,6 +1643,100 @@ export default function AdminDashboard() {
                       )}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Mobile Examination Marks Cards */}
+                <div className="md:hidden divide-y divide-slate-100">
+                  {filteredMarks.length === 0 ? (
+                    <div className="p-6 text-center text-slate-400 font-semibold text-xs">
+                      No examination marks recorded yet. Tap "+ Enter / Upload Marks" to record marks.
+                    </div>
+                  ) : (
+                    filteredMarks.map((m) => {
+                      const c1 = typeof m.cie1 === 'number' ? m.cie1 : null;
+                      const c2 = typeof m.cie2 === 'number' ? m.cie2 : null;
+                      const sVal = typeof m.see === 'number' ? m.see : null;
+                      const hasTotal = c1 !== null || c2 !== null || sVal !== null;
+                      const total = (c1 || 0) + (c2 || 0) + (sVal || 0);
+                      const pct = Math.round((total / 200) * 100);
+
+                      let grade = 'Pending';
+                      let gradeColor = 'bg-slate-100 text-slate-600 border-slate-200';
+                      if (c1 !== null && c2 !== null && sVal !== null) {
+                        if (pct >= 75) {
+                          grade = 'Distinction';
+                          gradeColor = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                        } else if (pct >= 60) {
+                          grade = 'First Class';
+                          gradeColor = 'bg-blue-50 text-blue-700 border-blue-200';
+                        } else if (pct >= 50) {
+                          grade = 'Second Class';
+                          gradeColor = 'bg-amber-50 text-amber-700 border-amber-200';
+                        } else {
+                          grade = 'Fail';
+                          gradeColor = 'bg-rose-50 text-rose-700 border-rose-200';
+                        }
+                      }
+
+                      return (
+                        <div key={`m_card_${m.id}`} className="p-4 space-y-3 bg-white">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="font-extrabold text-slate-900 text-sm">{m.studentName}</p>
+                              <span className="font-mono text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                                USN: {m.usn}
+                              </span>
+                            </div>
+                            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${gradeColor}`}>
+                              {grade}
+                            </span>
+                          </div>
+
+                          <div className="bg-slate-50 p-2.5 rounded-xl text-xs space-y-1">
+                            <div className="flex justify-between items-center">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase">Subject</span>
+                              <span className="font-bold text-slate-800">{m.subjectCode} - {m.subjectName}</span>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200/60 text-center">
+                              <div>
+                                <span className="text-[9px] font-bold text-slate-400 uppercase block">CIE 1</span>
+                                <span className="font-bold text-slate-800">{c1 !== null ? `${c1}/50` : '-'}</span>
+                              </div>
+                              <div>
+                                <span className="text-[9px] font-bold text-slate-400 uppercase block">CIE 2</span>
+                                <span className="font-bold text-slate-800">{c2 !== null ? `${c2}/50` : '-'}</span>
+                              </div>
+                              <div>
+                                <span className="text-[9px] font-bold text-slate-400 uppercase block">SEE</span>
+                                <span className="font-bold text-slate-800">{sVal !== null ? `${sVal}/100` : '-'}</span>
+                              </div>
+                            </div>
+                            {hasTotal && (
+                              <div className="flex justify-between items-center pt-2 border-t border-slate-200/60 font-black text-xs text-slate-900">
+                                <span>Aggregate Total:</span>
+                                <span>{total} / 200 ({pct}%)</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                            <button
+                              onClick={() => handleOpenEditMark(m)}
+                              className="flex-1 min-h-[40px] px-3 py-2 border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-xl cursor-pointer text-center"
+                            >
+                              ✏️ Edit Marks
+                            </button>
+                            <button
+                              onClick={() => handleDeleteMark(m.id)}
+                              className="min-h-[40px] px-4 py-2 border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-xl cursor-pointer text-center"
+                            >
+                              🗑️ Delete
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
 
@@ -1514,6 +1852,286 @@ export default function AdminDashboard() {
                   </div>
                 </div>
               )}
+            </div>
+          );
+        })()}
+
+        {/* Tab 7: User Security & Account Access */}
+        {activeTab === 'users' && (() => {
+          const userList = [
+            ...teachers.map(t => ({
+              id: t.id,
+              name: t.name,
+              email: t.email,
+              role: 'teacher',
+              roleLabel: 'Faculty',
+              roleBadge: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+              isVerified: t.isVerified ?? t.is_verified ?? true,
+              isActive: t.isActive ?? t.is_active ?? true,
+              extra: t.department || 'Academic Department'
+            })),
+            ...students.map(s => ({
+              id: s.id,
+              name: s.name,
+              email: s.email,
+              role: 'student',
+              roleLabel: 'Student',
+              roleBadge: 'bg-blue-50 text-blue-700 border-blue-200',
+              isVerified: s.isVerified ?? s.is_verified ?? true,
+              isActive: s.isActive ?? s.is_active ?? true,
+              extra: `USN: ${s.usn}`
+            })),
+            {
+              id: 'admin_root',
+              name: 'System Administrator',
+              email: 'admin@college.edu',
+              role: 'admin',
+              roleLabel: 'Administrator',
+              roleBadge: 'bg-purple-50 text-purple-700 border-purple-200',
+              isVerified: true,
+              isActive: true,
+              extra: 'Super Admin'
+            }
+          ];
+
+          const filteredUsers = userList.filter(u => {
+            if (userRoleFilter !== 'all' && u.role !== userRoleFilter) return false;
+            if (userStatusFilter === 'active' && !u.isActive) return false;
+            if (userStatusFilter === 'disabled' && u.isActive) return false;
+            if (userStatusFilter === 'verified' && !u.isVerified) return false;
+            if (userStatusFilter === 'pending' && u.isVerified) return false;
+            if (userSearchQuery) {
+              const q = userSearchQuery.toLowerCase();
+              return (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q);
+            }
+            return true;
+          });
+
+          return (
+            <div className="space-y-6">
+              {userActionToast && (
+                <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-2xl flex items-center justify-between text-xs font-bold animate-fadeIn shadow-sm">
+                  <span>✅ {userActionToast}</span>
+                  <button onClick={() => setUserActionToast('')} className="text-emerald-600 hover:text-emerald-900 font-bold">✕</button>
+                </div>
+              )}
+
+              {/* Title & Privacy Policy Banner */}
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div>
+                  <h2 className="text-lg sm:text-xl font-extrabold text-slate-800">User Security & Account Access</h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Manage email verification statuses, toggle account login access, and initiate secure OTP password resets.
+                  </p>
+                </div>
+                <div className="bg-blue-50/70 border border-blue-200/60 rounded-xl px-3.5 py-2 text-[11px] text-blue-800 font-medium flex items-center gap-2">
+                  <span>🔒</span>
+                  <span><strong>Zero-Knowledge Rule:</strong> Passwords are salted with PBKDF2 and never exposed to anyone.</span>
+                </div>
+              </div>
+
+              {/* Filter Bar */}
+              <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200 shadow-sm grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Filter Role</label>
+                  <select
+                    value={userRoleFilter}
+                    onChange={(e) => setUserRoleFilter(e.target.value)}
+                    className="w-full text-xs font-semibold rounded-xl border border-slate-200 bg-white p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">All Roles (Admin, Faculty, Student)</option>
+                    <option value="student">Students Only</option>
+                    <option value="teacher">Faculty / Teachers Only</option>
+                    <option value="admin">Administrators Only</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Filter Status</label>
+                  <select
+                    value={userStatusFilter}
+                    onChange={(e) => setUserStatusFilter(e.target.value)}
+                    className="w-full text-xs font-semibold rounded-xl border border-slate-200 bg-white p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="all">All Account Statuses</option>
+                    <option value="active">Active Accounts Only</option>
+                    <option value="disabled">Disabled Accounts Only</option>
+                    <option value="verified">Verified Emails Only</option>
+                    <option value="pending">Pending Verification Only</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Search User / Email</label>
+                  <input
+                    type="text"
+                    placeholder="Search by name or email address..."
+                    value={userSearchQuery}
+                    onChange={(e) => setUserSearchQuery(e.target.value)}
+                    className="w-full text-xs font-semibold rounded-xl border border-slate-200 bg-white p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Desktop Table View */}
+              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                        <th className="py-3 px-6">User / Identity</th>
+                        <th className="py-3 px-6">Email Address</th>
+                        <th className="py-3 px-6 text-center">Role</th>
+                        <th className="py-3 px-6 text-center">Email Verification</th>
+                        <th className="py-3 px-6 text-center">Account Access</th>
+                        <th className="py-3 px-6 text-right">Security Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs">
+                      {filteredUsers.length === 0 ? (
+                        <tr>
+                          <td colSpan="6" className="py-12 text-center text-slate-400 font-semibold">
+                            No accounts match the selected filters.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredUsers.map((u) => (
+                          <tr key={`${u.role}_${u.id}`} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="py-4 px-6">
+                              <p className="font-extrabold text-slate-900 text-sm">{u.name}</p>
+                              <p className="text-[10px] text-slate-400">{u.extra}</p>
+                            </td>
+                            <td className="py-4 px-6 font-mono text-xs text-slate-600">
+                              {u.email}
+                            </td>
+                            <td className="py-4 px-6 text-center">
+                              <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${u.roleBadge}`}>
+                                {u.roleLabel}
+                              </span>
+                            </td>
+                            <td className="py-4 px-6 text-center">
+                              {u.isVerified ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                  ✓ Verified
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                                  ⏳ Pending OTP
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-4 px-6 text-center">
+                              {u.isActive ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                  ● Active
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                  ✕ Disabled
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-4 px-6 text-right space-x-2 whitespace-nowrap">
+                              {u.role !== 'admin' && (
+                                <>
+                                  <button
+                                    onClick={() => handleToggleUserAccount(u.role, u.id, u.isActive)}
+                                    disabled={isProcessingUserAction}
+                                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
+                                      u.isActive
+                                        ? 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100'
+                                        : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'
+                                    }`}
+                                  >
+                                    {u.isActive ? 'Disable' : 'Activate'}
+                                  </button>
+                                  <button
+                                    onClick={() => handleAdminSendResetOtp(u.role, u.id, u.email)}
+                                    disabled={isProcessingUserAction}
+                                    className="px-2.5 py-1 bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                                    title="Send password reset OTP code directly to user's registered email"
+                                  >
+                                    Send Reset OTP
+                                  </button>
+                                </>
+                              )}
+                              {u.role === 'admin' && (
+                                <span className="text-[10px] text-slate-400 italic">Protected Root</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Mobile Cards View */}
+                <div className="md:hidden divide-y divide-slate-100">
+                  {filteredUsers.length === 0 ? (
+                    <div className="p-6 text-center text-slate-400 font-semibold text-xs">
+                      No accounts match the selected filters.
+                    </div>
+                  ) : (
+                    filteredUsers.map((u) => (
+                      <div key={`m_${u.role}_${u.id}`} className="p-4 space-y-3 bg-white">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-extrabold text-slate-900 text-sm">{u.name}</p>
+                            <p className="text-slate-500 text-xs font-mono break-all">{u.email}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">{u.extra}</p>
+                          </div>
+                          <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border shrink-0 ${u.roleBadge}`}>
+                            {u.roleLabel}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 text-xs">
+                          <div className="flex-1 bg-slate-50 p-2 rounded-xl text-center">
+                            <span className="text-[9px] text-slate-400 uppercase font-bold block">Verification</span>
+                            {u.isVerified ? (
+                              <span className="text-emerald-700 font-bold text-[11px]">✓ Verified</span>
+                            ) : (
+                              <span className="text-amber-600 font-bold text-[11px]">⏳ Pending OTP</span>
+                            )}
+                          </div>
+                          <div className="flex-1 bg-slate-50 p-2 rounded-xl text-center">
+                            <span className="text-[9px] text-slate-400 uppercase font-bold block">Access Status</span>
+                            {u.isActive ? (
+                              <span className="text-emerald-700 font-bold text-[11px]">● Active</span>
+                            ) : (
+                              <span className="text-rose-600 font-bold text-[11px]">✕ Disabled</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {u.role !== 'admin' ? (
+                          <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                            <button
+                              onClick={() => handleToggleUserAccount(u.role, u.id, u.isActive)}
+                              disabled={isProcessingUserAction}
+                              className={`flex-1 min-h-[42px] px-3 py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer text-center ${
+                                u.isActive
+                                  ? 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100'
+                                  : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'
+                              }`}
+                            >
+                              {u.isActive ? 'Disable Access' : 'Activate Access'}
+                            </button>
+                            <button
+                              onClick={() => handleAdminSendResetOtp(u.role, u.id, u.email)}
+                              disabled={isProcessingUserAction}
+                              className="flex-1 min-h-[42px] px-3 py-2 bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-bold transition-all cursor-pointer text-center"
+                            >
+                              🔑 Send Reset OTP
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="text-[10px] text-slate-400 text-center italic">Protected Root Administrator</p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
           );
         })()}

@@ -885,27 +885,27 @@ export default function StudentDashboard() {
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-16">
       {/* ── Top Navbar ── */}
       <nav className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+          <div className="flex flex-wrap sm:flex-nowrap justify-between items-center py-2.5 sm:py-0 sm:h-16 gap-2">
             <div className="flex items-center gap-2">
-              <SummitLogo className="w-10 h-10" />
+              <SummitLogo className="w-8 h-8 sm:w-10 sm:h-10 shrink-0" />
               <div className="leading-none">
-                <span className="text-lg font-black tracking-wide bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">SummitAttend</span>
+                <span className="text-base sm:text-lg font-black tracking-wide bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">SummitAttend</span>
                 <p className="text-[8px] uppercase font-bold tracking-widest text-slate-400">Student Portal</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
               <div className="text-right hidden sm:block">
-                <p className="text-xs font-semibold text-slate-500">Student Portal</p>
-                <p className="text-sm font-bold text-slate-800">{currentUser.name}</p>
+                <p className="text-[10px] font-semibold text-slate-500">Student Portal</p>
+                <p className="text-xs font-bold text-slate-800">{currentUser.name}</p>
               </div>
-              <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 border border-emerald-100 rounded-lg">
+              <div className="flex items-center gap-1 px-2 py-1 bg-emerald-50 border border-emerald-100 rounded-lg">
                 <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                <span className="text-[10px] font-bold text-emerald-700">Face Verified</span>
+                <span className="text-[10px] font-bold text-emerald-700">Verified</span>
               </div>
               <button
                 onClick={handleLogout}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 text-xs font-semibold rounded-lg bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-colors shadow-sm cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 sm:px-3 py-1.5 border border-slate-200 text-xs font-semibold rounded-lg bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-colors shadow-sm cursor-pointer"
               >
                 Logout
               </button>
@@ -954,29 +954,29 @@ export default function StudentDashboard() {
       </div>
 
       {/* ── Mobile/Desktop Tabs Navigation ── */}
-      <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 mt-6">
-        <div className="flex border-b border-slate-200 bg-white rounded-xl p-1 shadow-sm gap-1">
+      <div className="max-w-7xl mx-auto w-full px-3 sm:px-6 lg:px-8 mt-4 sm:mt-6">
+        <div className="flex border-b border-slate-200 bg-white rounded-xl p-1 shadow-sm gap-1 overflow-x-auto no-scrollbar">
           <button
             onClick={() => setActiveTab('tracker')}
-            className={`flex-1 py-3 text-center text-sm font-semibold rounded-lg transition-all duration-200 cursor-pointer ${activeTab === 'tracker' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
+            className={`whitespace-nowrap flex-1 px-3 sm:px-4 py-2.5 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all duration-200 shrink-0 cursor-pointer ${activeTab === 'tracker' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
           >
             📊 Subject Tracker
           </button>
           <button
             onClick={() => setActiveTab('scanner')}
-            className={`flex-1 py-3 text-center text-sm font-semibold rounded-lg transition-all duration-200 cursor-pointer ${activeTab === 'scanner' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
+            className={`whitespace-nowrap flex-1 px-3 sm:px-4 py-2.5 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all duration-200 shrink-0 cursor-pointer ${activeTab === 'scanner' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
           >
             📷 Instant Verification
           </button>
           <button
             onClick={() => setActiveTab('history')}
-            className={`flex-1 py-3 text-center text-sm font-semibold rounded-lg transition-all duration-200 cursor-pointer ${activeTab === 'history' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
+            className={`whitespace-nowrap flex-1 px-3 sm:px-4 py-2.5 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all duration-200 shrink-0 cursor-pointer ${activeTab === 'history' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
           >
             🔗 Ledger History
           </button>
           <button
             onClick={() => setActiveTab('marks')}
-            className={`flex-1 py-3 text-center text-sm font-semibold rounded-lg transition-all duration-200 cursor-pointer ${activeTab === 'marks' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
+            className={`whitespace-nowrap flex-1 px-3 sm:px-4 py-2.5 sm:py-3 text-center text-xs sm:text-sm font-semibold rounded-lg transition-all duration-200 shrink-0 cursor-pointer ${activeTab === 'marks' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
           >
             📝 Examination Marks
           </button>
@@ -1356,7 +1356,7 @@ export default function StudentDashboard() {
                   </span>
                 </div>
 
-                <div className="overflow-x-auto">
+                <div className="hidden md:block overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
@@ -1471,6 +1471,94 @@ export default function StudentDashboard() {
                       })}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Mobile Student Marks Card View */}
+                <div className="md:hidden divide-y divide-slate-100">
+                  {studentSubjects.map(sub => {
+                    const markObj = myMarks.find(m => m.subjectId === sub.id);
+
+                    const c1 = markObj && typeof markObj.cie1 === 'number' ? markObj.cie1 : null;
+                    const c2 = markObj && typeof markObj.cie2 === 'number' ? markObj.cie2 : null;
+                    const see = markObj && typeof markObj.see === 'number' ? markObj.see : null;
+
+                    const hasAny = c1 !== null || c2 !== null || see !== null;
+                    const total = (c1 || 0) + (c2 || 0) + (see || 0);
+                    const pct = Math.round((total / 200) * 100);
+
+                    let grade = 'Pending';
+                    let gradeBadge = 'bg-slate-100 text-slate-600 border-slate-200';
+                    if (c1 !== null && c2 !== null && see !== null) {
+                      if (pct >= 75) {
+                        grade = 'Distinction';
+                        gradeBadge = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                      } else if (pct >= 60) {
+                        grade = 'First Class';
+                        gradeBadge = 'bg-blue-50 text-blue-700 border-blue-200';
+                      } else if (pct >= 50) {
+                        grade = 'Second Class';
+                        gradeBadge = 'bg-amber-50 text-amber-700 border-amber-200';
+                      } else {
+                        grade = 'Fail';
+                        gradeBadge = 'bg-rose-50 text-rose-700 border-rose-200';
+                      }
+                    }
+
+                    return (
+                      <div key={`m_stud_marks_${sub.id}`} className="p-4 space-y-3 bg-white">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-extrabold text-slate-900 text-sm">{sub.name}</p>
+                            <span className="font-mono text-[10px] text-slate-400 font-bold bg-slate-100 px-1.5 py-0.5 rounded">
+                              {sub.code}
+                            </span>
+                          </div>
+                          <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border shrink-0 ${gradeBadge}`}>
+                            {grade}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-xl text-center">
+                          <div className="bg-white p-2 rounded-lg border border-slate-100">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase block">CIE 1</span>
+                            <span className="font-black text-slate-800 text-xs">
+                              {c1 !== null ? `${c1}/50` : <span className="text-slate-400 font-normal italic">Pending</span>}
+                            </span>
+                          </div>
+                          <div className="bg-white p-2 rounded-lg border border-slate-100">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase block">CIE 2</span>
+                            <span className="font-black text-slate-800 text-xs">
+                              {c2 !== null ? `${c2}/50` : <span className="text-slate-400 font-normal italic">Pending</span>}
+                            </span>
+                          </div>
+                          <div className="bg-white p-2 rounded-lg border border-slate-100">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase block">SEE</span>
+                            <span className="font-black text-slate-800 text-xs">
+                              {see !== null ? `${see}/100` : <span className="text-slate-400 font-normal italic">Pending</span>}
+                            </span>
+                          </div>
+                        </div>
+
+                        {hasAny && (
+                          <div className="flex justify-between items-center text-xs px-1 font-bold text-slate-700">
+                            <span>Total Score:</span>
+                            <span className="font-black text-slate-900">{total} / 200 ({pct}%)</span>
+                          </div>
+                        )}
+
+                        <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px]">
+                          {markObj ? (
+                            <span className="text-emerald-700 font-bold flex items-center gap-1">
+                              <span>✅ Verified on Ledger</span>
+                              <span className="text-slate-400 font-normal">({markObj.updatedBy || 'Faculty'})</span>
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic">Marks not published yet</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

@@ -133,3 +133,32 @@ class MarksBatchRequest(BaseModel):
 class MarksLockRequest(BaseModel):
     subjectId: str
     locked: bool
+
+
+class SendOtpRequest(BaseModel):
+    email: str
+    role: str
+    purpose: Optional[str] = "verification"
+
+class VerifyOtpRequest(BaseModel):
+    email: str
+    role: str
+    otp: str
+    purpose: Optional[str] = "verification"
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    role: str
+    otp: str
+    newPassword: str
+    confirmPassword: str
+
+class ToggleUserStatusRequest(BaseModel):
+    role: str
+    userId: str
+    isActive: bool
+
+class AdminResetRequest(BaseModel):
+    role: str
+    userId: str
+    email: str

@@ -73,3 +73,4 @@ Smart Attendance/
 ├── requirements.txt      # Python dependencies
 └── smart_attendance.db   # SQLite Database
 ```
+    http://127.0.0.1:8000/
