@@ -19,6 +19,9 @@ export default function TeacherDashboard() {
     markNC,
     attendanceRecords,
     sendWhatsAppAbsentAlert,
+    marks,
+    marksLocks,
+    saveMarks,
   } = useApp();
 
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
@@ -50,6 +53,13 @@ export default function TeacherDashboard() {
   const [selectedHistoryAbsentStudent, setSelectedHistoryAbsentStudent] = useState(null);
   const [historyNcReason, setHistoryNcReason] = useState('');
 
+  // ─── Teacher Examination Marks States ───
+  const [teacherMarksSubjectId, setTeacherMarksSubjectId] = useState('');
+  const [teacherMarksSectionId, setTeacherMarksSectionId] = useState('');
+  const [teacherMarksDraft, setTeacherMarksDraft] = useState({});
+  const [isSubmittingMarks, setIsSubmittingMarks] = useState(false);
+  const [teacherMarksToast, setTeacherMarksToast] = useState('');
+
   // Reset selected history date if subject or section changes
   useEffect(() => {
     setSelectedHistoryDate(null);
@@ -70,9 +80,11 @@ export default function TeacherDashboard() {
     if (currentUser && currentUser.role === 'teacher') {
       if (currentUser.assignedSubjects?.length > 0) {
         setSelectedSubjectId(currentUser.assignedSubjects[0]);
+        setTeacherMarksSubjectId(currentUser.assignedSubjects[0]);
       }
       if (currentUser.assignedSections?.length > 0) {
         setSelectedSectionId(currentUser.assignedSections[0]);
+        setTeacherMarksSectionId(currentUser.assignedSections[0]);
       }
     }
   }, [currentUser]);
@@ -426,7 +438,7 @@ export default function TeacherDashboard() {
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex border border-slate-200 bg-white p-1 rounded-xl max-w-md shadow-sm">
+        <div className="flex border border-slate-200 bg-white p-1 rounded-xl max-w-lg shadow-sm">
           <button
             onClick={() => setActiveTab('live')}
             className={`flex-1 py-2 text-center text-xs font-bold rounded-lg transition-all cursor-pointer ${
@@ -435,7 +447,7 @@ export default function TeacherDashboard() {
                 : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            🔴 Live Session Control
+            🔴 Live Session
           </button>
           <button
             onClick={() => setActiveTab('history')}
@@ -445,11 +457,21 @@ export default function TeacherDashboard() {
                 : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            📅 Attendance History Ledger
+            📅 Attendance History
+          </button>
+          <button
+            onClick={() => setActiveTab('marks')}
+            className={`flex-1 py-2 text-center text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              activeTab === 'marks'
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            📝 Examination Marks
           </button>
         </div>
 
-        {activeTab === 'live' ? (
+        {activeTab === 'live' && (
           /* ── Live Session Panel Grid ── */
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fadeIn">
             {/* Column 1: QR & Setup Operations */}
@@ -756,8 +778,10 @@ export default function TeacherDashboard() {
               </div>
             </div>
           </div>
-        ) : (
-          /* ── Historical Sessions Tab View ── */
+        )}
+
+        {/* ── Historical Sessions Tab View ── */
+        activeTab === 'history' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fadeIn">
             {/* Sidebar list of dates */}
             <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 flex flex-col space-y-4">
@@ -918,6 +942,308 @@ export default function TeacherDashboard() {
             </div>
           </div>
         )}
+
+        {/* ── Tab 3: Examination Marks Management (Assigned Subjects Only) ── */}
+        {activeTab === 'marks' && (() => {
+          // STRICT SECURITY RULE: Faculty can ONLY select their assigned subjects and sections
+          const assignedSubjectsList = subjects.filter(s => (currentUser?.assignedSubjects || []).includes(s.id));
+          const assignedSectionsList = sections.filter(sec => (currentUser?.assignedSections || []).includes(sec.id));
+
+          const activeSubId = teacherMarksSubjectId || assignedSubjectsList[0]?.id || '';
+          const activeSecId = teacherMarksSectionId || assignedSectionsList[0]?.id || '';
+
+          const selectedSub = subjects.find(s => s.id === activeSubId);
+          const isSubjectLocked = Boolean(marksLocks[activeSubId]);
+
+          // Students enrolled in this assigned section
+          const enrolledStudents = students.filter(s => s.sectionId === activeSecId);
+
+          const handleMarksInputChange = (studentId, field, val) => {
+            setTeacherMarksDraft(prev => ({
+              ...prev,
+              [studentId]: {
+                ...prev[studentId],
+                [field]: val
+              }
+            }));
+          };
+
+          const handleSaveAndSubmitMarks = async () => {
+            if (isSubjectLocked) {
+              alert("Marks submission for this subject has been locked by the Administrator. You cannot submit or edit marks.");
+              return;
+            }
+            if (!activeSubId || !activeSecId) {
+              alert("Please select a valid assigned subject and section.");
+              return;
+            }
+
+            setIsSubmittingMarks(true);
+            try {
+              const recordsToSubmit = enrolledStudents.map(st => {
+                const draft = teacherMarksDraft[st.id] || {};
+                const existing = (marks || []).find(m => m.studentId === st.id && m.subjectId === activeSubId);
+
+                const c1Val = draft.cie1 !== undefined ? draft.cie1 : (existing?.cie1 !== undefined && existing?.cie1 !== null ? String(existing.cie1) : '');
+                const c2Val = draft.cie2 !== undefined ? draft.cie2 : (existing?.cie2 !== undefined && existing?.cie2 !== null ? String(existing.cie2) : '');
+                const sVal = draft.see !== undefined ? draft.see : (existing?.see !== undefined && existing?.see !== null ? String(existing.see) : '');
+
+                return {
+                  id: existing ? existing.id : `${st.id}_${activeSubId}`,
+                  studentId: st.id,
+                  studentName: st.name,
+                  usn: st.usn,
+                  subjectId: activeSubId,
+                  subjectCode: selectedSub?.code || '',
+                  subjectName: selectedSub?.name || '',
+                  sectionId: activeSecId,
+                  cie1: c1Val !== '' ? Math.min(50, Math.max(0, parseFloat(c1Val))) : null,
+                  cie2: c2Val !== '' ? Math.min(50, Math.max(0, parseFloat(c2Val))) : null,
+                  see: sVal !== '' ? Math.min(100, Math.max(0, parseFloat(sVal))) : null,
+                  maxCie1: 50.0,
+                  maxCie2: 50.0,
+                  maxSee: 100.0,
+                  updatedBy: currentUser.email,
+                  locked: false
+                };
+              });
+
+              await saveMarks(recordsToSubmit);
+              setTeacherMarksToast(`Successfully submitted marks for ${recordsToSubmit.length} students to central database!`);
+              setTimeout(() => setTeacherMarksToast(''), 4500);
+            } catch (err) {
+              alert("Failed to submit marks: " + err.message);
+            } finally {
+              setIsSubmittingMarks(false);
+            }
+          };
+
+          return (
+            <div className="space-y-6 animate-fadeIn">
+              {teacherMarksToast && (
+                <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-2xl flex items-center justify-between text-xs font-bold shadow-sm">
+                  <span>✅ {teacherMarksToast}</span>
+                  <button onClick={() => setTeacherMarksToast('')} className="text-emerald-600 hover:text-emerald-900 font-bold">✕</button>
+                </div>
+              )}
+
+              {/* Header */}
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-extrabold text-slate-800">Assigned Subject Marks Upload</h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Upload official Continuous Internal Evaluations (CIE 1, CIE 2) and Semester End Examination (SEE) marks for your assigned courses.
+                  </p>
+                </div>
+
+                {isSubjectLocked ? (
+                  <div className="inline-flex items-center gap-2 px-3.5 py-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-xs font-bold">
+                    <span>🔒</span>
+                    <span>Submission Locked by Administrator (Read-Only)</span>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleSaveAndSubmitMarks}
+                    disabled={isSubmittingMarks || enrolledStudents.length === 0}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-extrabold rounded-xl shadow-md transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <span>💾</span>
+                    <span>{isSubmittingMarks ? 'Submitting...' : 'Save & Submit Marks to Database'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Selector Controls: Strictly Limited to Assigned Subjects & Sections */}
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                    Your Assigned Subject
+                  </label>
+                  {assignedSubjectsList.length === 0 ? (
+                    <p className="text-xs text-rose-500 font-bold p-2 bg-rose-50 rounded-xl">No assigned subjects found. Contact Admin.</p>
+                  ) : (
+                    <select
+                      value={activeSubId}
+                      onChange={(e) => setTeacherMarksSubjectId(e.target.value)}
+                      className="w-full text-xs font-bold rounded-xl border border-slate-200 bg-white p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      {assignedSubjectsList.map(s => (
+                        <option key={s.id} value={s.id}>{s.code} - {s.name}</option>
+                      ))}
+                    </select>
+                  )}
+                  <p className="text-[10px] text-slate-400 mt-1">Only subjects assigned to your faculty profile are permitted.</p>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
+                    Assigned Class Section
+                  </label>
+                  {assignedSectionsList.length === 0 ? (
+                    <p className="text-xs text-rose-500 font-bold p-2 bg-rose-50 rounded-xl">No assigned sections found.</p>
+                  ) : (
+                    <select
+                      value={activeSecId}
+                      onChange={(e) => setTeacherMarksSectionId(e.target.value)}
+                      className="w-full text-xs font-bold rounded-xl border border-slate-200 bg-white p-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      {assignedSectionsList.map(sec => {
+                        const yr = sec.year === 1 ? '1st' : sec.year === 2 ? '2nd' : sec.year === 3 ? '3rd' : '4th';
+                        return (
+                          <option key={sec.id} value={sec.id}>{yr} Year - {sec.name}</option>
+                        );
+                      })}
+                    </select>
+                  )}
+                  <p className="text-[10px] text-slate-400 mt-1">Displays student roster enrolled in this section.</p>
+                </div>
+              </div>
+
+              {/* Student Marks Upload Table */}
+              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                        <th className="py-3 px-5">Student Roster</th>
+                        <th className="py-3 px-4 text-center">CIE 1 (Max 50)</th>
+                        <th className="py-3 px-4 text-center">CIE 2 (Max 50)</th>
+                        <th className="py-3 px-4 text-center">SEE (Max 100)</th>
+                        <th className="py-3 px-4 text-center">Total (Max 200)</th>
+                        <th className="py-3 px-4 text-center">Calculated Grade</th>
+                        <th className="py-3 px-5 text-right">Database Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs">
+                      {enrolledStudents.length === 0 ? (
+                        <tr>
+                          <td colSpan="7" className="py-12 text-center text-slate-400 font-semibold">
+                            <span className="text-3xl block mb-2">👥</span>
+                            No students currently registered in this section.
+                          </td>
+                        </tr>
+                      ) : (
+                        enrolledStudents.map((st) => {
+                          const existing = (marks || []).find(m => m.studentId === st.id && m.subjectId === activeSubId);
+                          const draft = teacherMarksDraft[st.id] || {};
+
+                          const c1Str = draft.cie1 !== undefined ? draft.cie1 : (existing?.cie1 !== undefined && existing?.cie1 !== null ? String(existing.cie1) : '');
+                          const c2Str = draft.cie2 !== undefined ? draft.cie2 : (existing?.cie2 !== undefined && existing?.cie2 !== null ? String(existing.cie2) : '');
+                          const seeStr = draft.see !== undefined ? draft.see : (existing?.see !== undefined && existing?.see !== null ? String(existing.see) : '');
+
+                          const n1 = c1Str !== '' ? parseFloat(c1Str) : null;
+                          const n2 = c2Str !== '' ? parseFloat(c2Str) : null;
+                          const nSee = seeStr !== '' ? parseFloat(seeStr) : null;
+
+                          const hasAny = n1 !== null || n2 !== null || nSee !== null;
+                          const total = (n1 || 0) + (n2 || 0) + (nSee || 0);
+                          const pct = Math.round((total / 200) * 100);
+
+                          let grade = 'Pending';
+                          let gradeBadge = 'bg-slate-100 text-slate-600 border-slate-200';
+                          if (n1 !== null && n2 !== null && nSee !== null) {
+                            if (pct >= 75) {
+                              grade = 'Distinction';
+                              gradeBadge = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                            } else if (pct >= 60) {
+                              grade = 'First Class';
+                              gradeBadge = 'bg-blue-50 text-blue-700 border-blue-200';
+                            } else if (pct >= 50) {
+                              grade = 'Second Class';
+                              gradeBadge = 'bg-amber-50 text-amber-700 border-amber-200';
+                            } else {
+                              grade = 'Fail';
+                              gradeBadge = 'bg-rose-50 text-rose-700 border-rose-200';
+                            }
+                          }
+
+                          return (
+                            <tr key={st.id} className="hover:bg-slate-50/60 transition-colors">
+                              <td className="py-3 px-5">
+                                <p className="font-extrabold text-slate-900">{st.name}</p>
+                                <p className="text-[10px] font-mono font-bold text-slate-400">USN: {st.usn}</p>
+                              </td>
+
+                              {/* CIE 1 Input */}
+                              <td className="py-3 px-4 text-center">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="50"
+                                  step="0.5"
+                                  disabled={isSubjectLocked}
+                                  placeholder="0 - 50"
+                                  value={c1Str}
+                                  onChange={(e) => handleMarksInputChange(st.id, 'cie1', e.target.value)}
+                                  className="w-20 text-center font-bold text-slate-800 border border-slate-200 rounded-lg p-1.5 text-xs focus:border-blue-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                                />
+                              </td>
+
+                              {/* CIE 2 Input */}
+                              <td className="py-3 px-4 text-center">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="50"
+                                  step="0.5"
+                                  disabled={isSubjectLocked}
+                                  placeholder="0 - 50"
+                                  value={c2Str}
+                                  onChange={(e) => handleMarksInputChange(st.id, 'cie2', e.target.value)}
+                                  className="w-20 text-center font-bold text-slate-800 border border-slate-200 rounded-lg p-1.5 text-xs focus:border-blue-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                                />
+                              </td>
+
+                              {/* SEE Input */}
+                              <td className="py-3 px-4 text-center">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  step="0.5"
+                                  disabled={isSubjectLocked}
+                                  placeholder="0 - 100"
+                                  value={seeStr}
+                                  onChange={(e) => handleMarksInputChange(st.id, 'see', e.target.value)}
+                                  className="w-24 text-center font-bold text-slate-800 border border-slate-200 rounded-lg p-1.5 text-xs focus:border-blue-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+                                />
+                              </td>
+
+                              {/* Total Score */}
+                              <td className="py-3 px-4 text-center font-black text-slate-900">
+                                {hasAny ? `${total} / 200` : '-'}
+                              </td>
+
+                              {/* Calculated Grade */}
+                              <td className="py-3 px-4 text-center">
+                                <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${gradeBadge}`}>
+                                  {grade}
+                                </span>
+                              </td>
+
+                              {/* Database Status */}
+                              <td className="py-3 px-5 text-right">
+                                {existing ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                                    Saved in Cloud ✅
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-slate-400 font-semibold italic">
+                                    Draft
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* ── Modal: Enter NC Excuse details ── */}

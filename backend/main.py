@@ -16,7 +16,8 @@ from .database import (
     get_students, insert_student, update_student, delete_student, enroll_student_face, remove_student_face,
     get_active_sessions, insert_active_session, update_active_session_students, delete_active_session,
     get_nc_records, insert_nc_record,
-    get_attendance_records, insert_attendance_record
+    get_attendance_records, insert_attendance_record,
+    get_marks, insert_or_update_mark, delete_mark, set_marks_lock
 )
 from .firebase_db import (
     get_firebase_status, is_firebase_active,
@@ -27,7 +28,8 @@ from .blockchain import blockchain, generate_blockchain_hash, haversine_distance
 from .models import (
     LoginRequest, RegisterRequest, SectionCreate, SubjectCreate, TeacherCreate,
     TeacherAssignmentUpdate, StudentCreate, StudentUpdate, WhatsAppNotificationRequest, FaceEnrollRequest, FaceLoginRequest, StartSessionRequest,
-    MarkAttendanceRequest, StudentCheckInRequest, NCRecordCreate
+    MarkAttendanceRequest, StudentCheckInRequest, NCRecordCreate,
+    MarkItem, MarksBatchRequest, MarksLockRequest
 )
 
 @asynccontextmanager
@@ -428,6 +430,7 @@ async def get_system_data():
         "activeSessions": sess,
         "ncRecords": nc,
         "attendanceRecords": attendance_map,
+        "marks": get_marks(),
         "stats": stats,
         "firebase": get_firebase_status()
     }
@@ -806,6 +809,43 @@ async def send_whatsapp_absent_notification(req: WhatsAppNotificationRequest):
         "message": message_text,
         "tx_hash": tx_hash
     }
+
+
+# ─── Marks Management Endpoints ───
+
+@app.get("/api/marks")
+async def list_marks():
+    return get_marks()
+
+@app.post("/api/marks")
+async def save_mark(mark: MarkItem):
+    saved = insert_or_update_mark(mark.dict())
+    return {"success": True, "mark": saved}
+
+@app.post("/api/marks/batch")
+async def save_marks_batch(batch: MarksBatchRequest):
+    saved_items = []
+    for item in batch.marks:
+        s = insert_or_update_mark(item.dict())
+        saved_items.append(s)
+    return {"success": True, "count": len(saved_items), "marks": saved_items}
+
+@app.put("/api/marks/{mark_id}")
+async def update_mark(mark_id: str, mark: MarkItem):
+    data = mark.dict()
+    data["id"] = mark_id
+    saved = insert_or_update_mark(data)
+    return {"success": True, "mark": saved}
+
+@app.delete("/api/marks/{mark_id}")
+async def remove_mark(mark_id: str):
+    delete_mark(mark_id)
+    return {"success": True, "deleted": mark_id}
+
+@app.post("/api/marks/lock")
+async def toggle_marks_lock(req: MarksLockRequest):
+    set_marks_lock(req.subjectId, req.locked)
+    return {"success": True, "subjectId": req.subjectId, "locked": req.locked}
 
 # ─── Blockchain Ledger Endpoints ───
 

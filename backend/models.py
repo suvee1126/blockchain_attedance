@@ -106,3 +106,30 @@ class FaceLoginRequest(BaseModel):
     emailOrUsn: str
     password: Optional[str] = ""
     imageData: str
+
+
+class MarkItem(BaseModel):
+    id: Optional[str] = None
+    studentId: int
+    studentName: str
+    usn: str
+    subjectId: str
+    subjectCode: str
+    subjectName: str
+    sectionId: Optional[str] = ''
+    cie1: Optional[float] = None
+    cie2: Optional[float] = None
+    see: Optional[float] = None
+    maxCie1: Optional[float] = 50.0
+    maxCie2: Optional[float] = 50.0
+    maxSee: Optional[float] = 100.0
+    updatedBy: Optional[str] = ''
+    updatedAt: Optional[str] = ''
+    locked: Optional[bool] = False
+
+class MarksBatchRequest(BaseModel):
+    marks: List[MarkItem]
+
+class MarksLockRequest(BaseModel):
+    subjectId: str
+    locked: bool

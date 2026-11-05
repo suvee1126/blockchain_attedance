@@ -193,7 +193,7 @@ def clear_all_firebase_data():
     """Clears all smart attendance collections from Firestore."""
     collections = [
         "students", "teachers", "admins", "attendance_records",
-        "active_sessions", "nc_records", "blockchain_ledger"
+        "active_sessions", "nc_records", "blockchain_ledger", "marks"
     ]
     total_deleted = 0
     for col in collections:
@@ -204,7 +204,7 @@ def sync_entire_database_to_firebase() -> Dict[str, Any]:
     """Syncs all current SQLite records and Blockchain Ledger to Firebase Cloud."""
     from .database import (
         get_sections, get_subjects, get_teachers,
-        get_students, get_active_sessions, get_attendance_records, get_nc_records, get_admins
+        get_students, get_active_sessions, get_attendance_records, get_nc_records, get_admins, get_marks
     )
     from .blockchain import blockchain
 
@@ -252,6 +252,11 @@ def sync_entire_database_to_firebase() -> Dict[str, Any]:
     for block in blockchain.chain:
         sync_doc_to_firebase("blockchain_ledger", f"block_{block.index}", block.to_dict())
     synced_counts["blockchain_blocks"] = len(blockchain.chain)
+
+    # 8. Marks
+    for m in get_marks():
+        sync_doc_to_firebase("marks", m["id"], m)
+    synced_counts["marks"] = len(get_marks())
 
     return {
         "success": True,

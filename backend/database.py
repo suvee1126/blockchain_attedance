@@ -136,6 +136,29 @@ def init_db():
     );
     """)
 
+    # Marks table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS marks (
+        id TEXT PRIMARY KEY,
+        student_id INTEGER NOT NULL,
+        student_name TEXT NOT NULL,
+        usn TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        subject_code TEXT NOT NULL,
+        subject_name TEXT NOT NULL,
+        section_id TEXT NOT NULL,
+        cie1 REAL,
+        cie2 REAL,
+        see REAL,
+        max_cie1 REAL DEFAULT 50.0,
+        max_cie2 REAL DEFAULT 50.0,
+        max_see REAL DEFAULT 100.0,
+        updated_by TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        locked INTEGER DEFAULT 0
+    );
+    """)
+
     # Blockchain Blocks table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS blockchain_blocks (
@@ -196,6 +219,7 @@ def clear_database() -> Dict[str, Any]:
     cursor.execute("DELETE FROM active_sessions")
     cursor.execute("DELETE FROM attendance_records")
     cursor.execute("DELETE FROM nc_records")
+    cursor.execute("DELETE FROM marks")
     cursor.execute("DELETE FROM blockchain_blocks")
 
     # Reset admin
@@ -558,3 +582,82 @@ def insert_attendance_record(record: Dict[str, Any]):
     conn.commit()
     conn.close()
     sync_doc_to_firebase("attendance_records", record.get("id"), record)
+
+
+# ─── Marks Operations ───
+
+def get_marks() -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT id, student_id, student_name, usn, subject_id, subject_code, subject_name, section_id, cie1, cie2, see, max_cie1, max_cie2, max_see, updated_by, updated_at, locked FROM marks"
+    ).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        result.append({
+            "id": d["id"],
+            "studentId": d["student_id"],
+            "studentName": d["student_name"],
+            "usn": d["usn"],
+            "subjectId": d["subject_id"],
+            "subjectCode": d["subject_code"],
+            "subjectName": d["subject_name"],
+            "sectionId": d["section_id"],
+            "cie1": d["cie1"],
+            "cie2": d["cie2"],
+            "see": d["see"],
+            "maxCie1": d["max_cie1"],
+            "maxCie2": d["max_cie2"],
+            "maxSee": d["max_see"],
+            "updatedBy": d["updated_by"],
+            "updatedAt": d["updated_at"],
+            "locked": bool(d["locked"])
+        })
+    return result
+
+def insert_or_update_mark(mark: Dict[str, Any]):
+    conn = get_db_connection()
+    mark_id = mark.get("id") or f"{mark['studentId']}_{mark['subjectId']}"
+    conn.execute(
+        """INSERT OR REPLACE INTO marks 
+        (id, student_id, student_name, usn, subject_id, subject_code, subject_name, section_id, cie1, cie2, see, max_cie1, max_cie2, max_see, updated_by, updated_at, locked)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            mark_id,
+            mark["studentId"],
+            mark["studentName"],
+            mark["usn"],
+            mark["subjectId"],
+            mark["subjectCode"],
+            mark["subjectName"],
+            mark.get("sectionId", ""),
+            mark.get("cie1"),
+            mark.get("cie2"),
+            mark.get("see"),
+            mark.get("maxCie1", 50.0),
+            mark.get("maxCie2", 50.0),
+            mark.get("maxSee", 100.0),
+            mark.get("updatedBy", ""),
+            mark.get("updatedAt", ""),
+            1 if mark.get("locked") else 0
+        )
+    )
+    conn.commit()
+    conn.close()
+    mark_copy = {**mark, "id": mark_id}
+    sync_doc_to_firebase("marks", mark_id, mark_copy)
+    return mark_copy
+
+def delete_mark(mark_id: str):
+    conn = get_db_connection()
+    conn.execute("DELETE FROM marks WHERE id = ?", (mark_id,))
+    conn.commit()
+    conn.close()
+    delete_doc_from_firebase("marks", mark_id)
+
+def set_marks_lock(subject_id: str, locked: bool):
+    conn = get_db_connection()
+    conn.execute("UPDATE marks SET locked = ? WHERE subject_id = ?", (1 if locked else 0, subject_id))
+    conn.commit()
+    conn.close()

@@ -21,6 +21,7 @@ export default function StudentDashboard() {
     logout,
     fetchSystemData,
     refreshSessions,
+    marks,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState('tracker'); // tracker | scanner | history
@@ -973,6 +974,12 @@ export default function StudentDashboard() {
           >
             🔗 Ledger History
           </button>
+          <button
+            onClick={() => setActiveTab('marks')}
+            className={`flex-1 py-3 text-center text-sm font-semibold rounded-lg transition-all duration-200 cursor-pointer ${activeTab === 'marks' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:text-blue-600 hover:bg-slate-50'}`}
+          >
+            📝 Examination Marks
+          </button>
         </div>
       </div>
 
@@ -1251,6 +1258,225 @@ export default function StudentDashboard() {
             </div>
           </div>
         )}
+        {/* Tab 4: Examination Marks Section (Read-Only) */}
+        {activeTab === 'marks' && (() => {
+          // Filter marks exclusively for the logged-in student
+          const myMarks = (marks || []).filter(m => 
+            String(m.studentId) === String(currentUser?.id) || 
+            (m.usn && currentUser?.usn && m.usn.toLowerCase() === currentUser.usn.toLowerCase())
+          );
+
+          // Get all subjects this student is enrolled in
+          const studentSubjects = subjects.filter(sub => 
+            !currentUser?.subjectIds || currentUser.subjectIds.length === 0 || currentUser.subjectIds.includes(sub.id)
+          );
+
+          // Calculate overall statistics
+          let totalMarksEarned = 0;
+          let totalPossibleMarks = 0;
+          let completedExamsCount = 0;
+
+          studentSubjects.forEach(sub => {
+            const markObj = myMarks.find(m => m.subjectId === sub.id);
+            if (markObj) {
+              const c1 = typeof markObj.cie1 === 'number' ? markObj.cie1 : null;
+              const c2 = typeof markObj.cie2 === 'number' ? markObj.cie2 : null;
+              const see = typeof markObj.see === 'number' ? markObj.see : null;
+
+              if (c1 !== null) { totalMarksEarned += c1; totalPossibleMarks += 50; completedExamsCount++; }
+              if (c2 !== null) { totalMarksEarned += c2; totalPossibleMarks += 50; completedExamsCount++; }
+              if (see !== null) { totalMarksEarned += see; totalPossibleMarks += 100; completedExamsCount++; }
+            }
+          });
+
+          const overallPercentage = totalPossibleMarks > 0 ? Math.round((totalMarksEarned / totalPossibleMarks) * 100) : 0;
+
+          return (
+            <div className="space-y-6 animate-fadeIn">
+              {/* Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-extrabold text-slate-800">Academic Examination Marks</h2>
+                  <p className="text-sm text-slate-500 mt-0.5">
+                    Official verified results across CIE 1, CIE 2, and Semester End Examination (SEE)
+                  </p>
+                </div>
+                <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-xl text-xs font-bold shadow-sm">
+                  <span>🔒</span>
+                  <span>Read-Only Official Record</span>
+                </div>
+              </div>
+
+              {/* Summary Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center text-2xl text-blue-600 font-black">
+                    📈
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Overall Academic Score</p>
+                    <p className="text-2xl font-black text-slate-900 mt-0.5">
+                      {totalPossibleMarks > 0 ? `${overallPercentage}%` : 'N/A'}
+                    </p>
+                    <p className="text-[11px] font-bold text-blue-600">
+                      {totalPossibleMarks > 0 ? `${totalMarksEarned} / ${totalPossibleMarks} Marks` : 'Awaiting grades'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-50 flex items-center justify-center text-2xl text-indigo-600 font-black">
+                    📚
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Enrolled Courses</p>
+                    <p className="text-2xl font-black text-slate-900 mt-0.5">{studentSubjects.length}</p>
+                    <p className="text-[11px] text-slate-500">Active Syllabus Subjects</p>
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center text-2xl text-emerald-600 font-black">
+                    ✅
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Evaluations Recorded</p>
+                    <p className="text-2xl font-black text-slate-900 mt-0.5">{completedExamsCount}</p>
+                    <p className="text-[11px] text-emerald-600 font-semibold">Published by Faculty</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Subject-Wise Examination Marks Table */}
+              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                  <h3 className="font-extrabold text-slate-900 text-sm">Subject-Wise Examination Breakdown</h3>
+                  <span className="text-[10px] font-mono font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                    USN: {currentUser?.usn || 'N/A'}
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                        <th className="py-4 px-6">Subject Syllabus</th>
+                        <th className="py-4 px-4 text-center">CIE 1 (Max 50)</th>
+                        <th className="py-4 px-4 text-center">CIE 2 (Max 50)</th>
+                        <th className="py-4 px-4 text-center">SEE (Max 100)</th>
+                        <th className="py-4 px-4 text-center">Total (Max 200)</th>
+                        <th className="py-4 px-4 text-center">Academic Grade</th>
+                        <th className="py-4 px-6 text-right">Instructor Verification</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs">
+                      {studentSubjects.map(sub => {
+                        const markObj = myMarks.find(m => m.subjectId === sub.id);
+
+                        const c1 = markObj && typeof markObj.cie1 === 'number' ? markObj.cie1 : null;
+                        const c2 = markObj && typeof markObj.cie2 === 'number' ? markObj.cie2 : null;
+                        const see = markObj && typeof markObj.see === 'number' ? markObj.see : null;
+
+                        const hasAny = c1 !== null || c2 !== null || see !== null;
+                        const total = (c1 || 0) + (c2 || 0) + (see || 0);
+                        const pct = Math.round((total / 200) * 100);
+
+                        let grade = 'Pending';
+                        let gradeBadge = 'bg-slate-100 text-slate-600 border-slate-200';
+                        if (c1 !== null && c2 !== null && see !== null) {
+                          if (pct >= 75) {
+                            grade = 'Distinction';
+                            gradeBadge = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                          } else if (pct >= 60) {
+                            grade = 'First Class';
+                            gradeBadge = 'bg-blue-50 text-blue-700 border-blue-200';
+                          } else if (pct >= 50) {
+                            grade = 'Second Class';
+                            gradeBadge = 'bg-amber-50 text-amber-700 border-amber-200';
+                          } else {
+                            grade = 'Fail';
+                            gradeBadge = 'bg-rose-50 text-rose-700 border-rose-200';
+                          }
+                        }
+
+                        return (
+                          <tr key={sub.id} className="hover:bg-slate-50/60 transition-colors">
+                            <td className="py-4 px-6">
+                              <p className="font-extrabold text-slate-900 text-sm">{sub.name}</p>
+                              <span className="font-mono text-[10px] text-slate-400 font-bold bg-slate-100 px-1.5 py-0.5 rounded">
+                                {sub.code}
+                              </span>
+                            </td>
+
+                            {/* CIE 1 */}
+                            <td className="py-4 px-4 text-center">
+                              {c1 !== null ? (
+                                <span className="font-bold text-slate-900 text-sm bg-blue-50 text-blue-800 px-2.5 py-1 rounded-xl border border-blue-100">
+                                  {c1} <span className="text-[10px] text-blue-500 font-normal">/ 50</span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 text-xs italic font-medium">⏳ Pending</span>
+                              )}
+                            </td>
+
+                            {/* CIE 2 */}
+                            <td className="py-4 px-4 text-center">
+                              {c2 !== null ? (
+                                <span className="font-bold text-slate-900 text-sm bg-indigo-50 text-indigo-800 px-2.5 py-1 rounded-xl border border-indigo-100">
+                                  {c2} <span className="text-[10px] text-indigo-500 font-normal">/ 50</span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 text-xs italic font-medium">⏳ Pending</span>
+                              )}
+                            </td>
+
+                            {/* SEE */}
+                            <td className="py-4 px-4 text-center">
+                              {see !== null ? (
+                                <span className="font-bold text-slate-900 text-sm bg-purple-50 text-purple-800 px-2.5 py-1 rounded-xl border border-purple-100">
+                                  {see} <span className="text-[10px] text-purple-500 font-normal">/ 100</span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 text-xs italic font-medium">⏳ Pending</span>
+                              )}
+                            </td>
+
+                            {/* Total Score */}
+                            <td className="py-4 px-4 text-center font-black text-slate-900 text-sm">
+                              {hasAny ? `${total} / 200 (${pct}%)` : '-'}
+                            </td>
+
+                            {/* Grade */}
+                            <td className="py-4 px-4 text-center">
+                              <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold border ${gradeBadge}`}>
+                                {grade}
+                              </span>
+                            </td>
+
+                            {/* Status */}
+                            <td className="py-4 px-6 text-right">
+                              {markObj ? (
+                                <div>
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                                    Verified on Ledger ✅
+                                  </span>
+                                  <p className="text-[9px] text-slate-400 mt-0.5 font-mono">By {markObj.updatedBy || 'Faculty'}</p>
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 text-[11px] italic">Not published yet</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
       </div>
 
       {/* ── Secure Camera Scanning Modal Overlay ── */}

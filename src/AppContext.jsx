@@ -1,10 +1,9 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import {
   initialStudents, initialTeachers, initialSubjects,
   initialSections, generateSubjectAttendance, systemStats,
 } from './mockData';
 import { generateBlockchainHash, compareFaceBiometricsClientSide } from './utils';
-import { supabase } from './supabaseClient';
 
 const AppContext = createContext(null);
 
@@ -27,25 +26,54 @@ async function safeFetchJson(url, options = {}) {
   }
 }
 
+// ─── Cloud Firestore Centralized Database ───
 const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/smart-add-f776e/databases/(default)/documents';
+
+function toFirestoreValue(val) {
+  if (val === null || val === undefined) return { nullValue: null };
+  if (typeof val === 'string') return { stringValue: val };
+  if (typeof val === 'boolean') return { booleanValue: val };
+  if (typeof val === 'number') {
+    return Number.isInteger(val) ? { integerValue: String(val) } : { doubleValue: val };
+  }
+  if (Array.isArray(val)) {
+    return { arrayValue: { values: val.map(toFirestoreValue) } };
+  }
+  if (typeof val === 'object') {
+    const fields = {};
+    for (const [k, v] of Object.entries(val)) {
+      if (v !== undefined) fields[k] = toFirestoreValue(v);
+    }
+    return { mapValue: { fields } };
+  }
+  return { stringValue: String(val) };
+}
+
+function fromFirestoreValue(val) {
+  if (!val) return null;
+  if ('stringValue' in val) return val.stringValue;
+  if ('integerValue' in val) return parseInt(val.integerValue, 10);
+  if ('doubleValue' in val) return parseFloat(val.doubleValue);
+  if ('booleanValue' in val) return val.booleanValue;
+  if ('nullValue' in val) return null;
+  if ('arrayValue' in val) {
+    return (val.arrayValue.values || []).map(fromFirestoreValue);
+  }
+  if ('mapValue' in val) {
+    const res = {};
+    for (const [k, v] of Object.entries(val.mapValue.fields || {})) {
+      res[k] = fromFirestoreValue(v);
+    }
+    return res;
+  }
+  return null;
+}
 
 function parseFirestoreDoc(doc) {
   if (!doc || !doc.fields) return null;
   const res = {};
   for (const [k, v] of Object.entries(doc.fields)) {
-    if (v.stringValue !== undefined) res[k] = v.stringValue;
-    else if (v.integerValue !== undefined) res[k] = parseInt(v.integerValue, 10);
-    else if (v.doubleValue !== undefined) res[k] = parseFloat(v.doubleValue);
-    else if (v.booleanValue !== undefined) res[k] = v.booleanValue;
-    else if (v.arrayValue !== undefined) {
-      const arr = v.arrayValue.values || [];
-      res[k] = arr.map(item => {
-        if (item.stringValue !== undefined) return item.stringValue;
-        if (item.integerValue !== undefined) return parseInt(item.integerValue, 10);
-        if (item.doubleValue !== undefined) return parseFloat(item.doubleValue);
-        return item;
-      });
-    }
+    res[k] = fromFirestoreValue(v);
   }
   return res;
 }
@@ -53,28 +81,53 @@ function parseFirestoreDoc(doc) {
 function toFirestoreFields(obj) {
   const fields = {};
   for (const [k, v] of Object.entries(obj)) {
-    if (v === undefined || v === null) continue;
-    if (typeof v === 'string') fields[k] = { stringValue: v };
-    else if (typeof v === 'number') {
-      if (Number.isInteger(v)) fields[k] = { integerValue: String(v) };
-      else fields[k] = { doubleValue: v };
-    } else if (typeof v === 'boolean') fields[k] = { booleanValue: v };
-    else if (Array.isArray(v)) {
-      fields[k] = {
-        arrayValue: {
-          values: v.map(item => {
-            if (typeof item === 'number') return { integerValue: String(item) };
-            return { stringValue: String(item) };
-          })
-        }
-      };
+    if (v !== undefined) {
+      fields[k] = toFirestoreValue(v);
     }
   }
   return { fields };
 }
 
+// Global Cloud Firestore Helpers that run on ALL devices (Mobile, Laptop, Vercel)
+async function syncDocToFirestore(collection, docId, data) {
+  if (!docId) return;
+  try {
+    await fetch(`${FIRESTORE_BASE}/${collection}/${encodeURIComponent(String(docId))}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(toFirestoreFields(data))
+    });
+  } catch (err) {
+    console.warn(`Firestore sync warning for ${collection}/${docId}:`, err);
+  }
+}
+
+async function deleteDocFromFirestore(collection, docId) {
+  if (!docId) return;
+  try {
+    await fetch(`${FIRESTORE_BASE}/${collection}/${encodeURIComponent(String(docId))}`, {
+      method: 'DELETE'
+    });
+  } catch (err) {
+    console.warn(`Firestore delete warning for ${collection}/${docId}:`, err);
+  }
+}
+
+async function fetchFirestoreCollection(collection) {
+  try {
+    const res = await fetch(`${FIRESTORE_BASE}/${collection}?pageSize=300`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.documents) return [];
+    return data.documents.map(parseFirestoreDoc).filter(Boolean);
+  } catch (err) {
+    console.warn(`Firestore collection fetch error for ${collection}:`, err);
+    return null;
+  }
+}
+
 export function AppProvider({ children }) {
-  // Initialize states with local cached data or seed data so mobile / reload never blanks out
+  // Initialize states with local cached data or seed data
   const [students, setStudents] = useState(() => {
     try {
       const c = localStorage.getItem('sa_cached_students');
@@ -132,8 +185,30 @@ export function AppProvider({ children }) {
     return [];
   });
   const [ncRecords, setNcRecords] = useState([]);
+  const [firebaseStatus, setFirebaseStatus] = useState({ configured: true, connected: true });
 
-  const [firebaseStatus, setFirebaseStatus] = useState(null);
+  // ─── Marks State ───
+  const [marks, setMarks] = useState(() => {
+    try {
+      const c = localStorage.getItem('sa_cached_marks');
+      if (c) {
+        const parsed = JSON.parse(c);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  const [marksLocks, setMarksLocks] = useState(() => {
+    try {
+      const c = localStorage.getItem('sa_cached_marks_locks');
+      if (c) {
+        const parsed = JSON.parse(c);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {}
+    return {};
+  });
 
   // Dedicated sessions refresh from Python backend or Cloud Firestore
   const refreshSessions = useCallback(async () => {
@@ -147,18 +222,11 @@ export function AppProvider({ children }) {
 
     // 2. Fetch directly from Cloud Firestore (cross-device cloud sync for mobile & Vercel)
     try {
-      const fsRes = await fetch(`${FIRESTORE_BASE}/active_sessions`);
-      if (fsRes.ok) {
-        const fsData = await fsRes.json();
-        if (fsData.documents) {
-          const sessions = fsData.documents.map(parseFirestoreDoc).filter(Boolean);
-          setActiveSessions(sessions);
-          try { localStorage.setItem('sa_active_sessions', JSON.stringify(sessions)); } catch {}
-          return sessions;
-        } else {
-          setActiveSessions([]);
-          try { localStorage.setItem('sa_active_sessions', JSON.stringify([])); } catch {}
-        }
+      const fsSessions = await fetchFirestoreCollection('active_sessions');
+      if (fsSessions) {
+        setActiveSessions(fsSessions);
+        try { localStorage.setItem('sa_active_sessions', JSON.stringify(fsSessions)); } catch {}
+        return fsSessions;
       }
     } catch (e) {
       console.warn("Firestore active_sessions fetch skipped:", e);
@@ -188,155 +256,245 @@ export function AppProvider({ children }) {
           if (Array.isArray(parsed)) setActiveSessions(parsed);
         } catch {}
       }
+      if (e.key === 'sa_cached_marks' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) setMarks(parsed);
+        } catch {}
+      }
+      if (e.key === 'sa_cached_students' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) setStudents(parsed);
+        } catch {}
+      }
     };
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
-  // Load system data from Python API on mount (with Supabase/local fallback)
+  // ─── Centralized Master Fetch (Syncs across Mobile, Laptop, Vercel) ───
+  const isFetchingRef = useRef(false);
+
   const fetchSystemData = useCallback(async () => {
-    const resp = await safeFetchJson(`${API_BASE}/api/system/data`);
-    if (resp.ok && resp.isJson && resp.data) {
-      const pyData = resp.data;
-      if (pyData.sections && pyData.sections.length > 0) {
-        setSections(pyData.sections);
-        localStorage.setItem('sa_cached_sections', JSON.stringify(pyData.sections));
-      }
-      if (pyData.subjects && pyData.subjects.length > 0) {
-        setSubjects(pyData.subjects);
-        localStorage.setItem('sa_cached_subjects', JSON.stringify(pyData.subjects));
-      }
-      if (pyData.teachers && pyData.teachers.length > 0) {
-        setTeachers(pyData.teachers);
-        localStorage.setItem('sa_cached_teachers', JSON.stringify(pyData.teachers));
-      }
-      if (pyData.students && pyData.students.length > 0) {
-        setStudents(pyData.students);
-        localStorage.setItem('sa_cached_students', JSON.stringify(pyData.students));
-      }
-      if (pyData.activeSessions) {
-        setActiveSessions(pyData.activeSessions);
-        try { localStorage.setItem('sa_active_sessions', JSON.stringify(pyData.activeSessions)); } catch {}
-      }
-      if (pyData.ncRecords) setNcRecords(pyData.ncRecords);
-      if (pyData.attendanceRecords) setAttendanceRecords(pyData.attendanceRecords);
-      if (pyData.firebase) setFirebaseStatus(pyData.firebase);
-      return pyData;
-    }
-
-    // Refresh active sessions and student biometric records from Firestore Cloud
-    await refreshSessions();
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
 
     try {
-      const fsStudRes = await fetch(`${FIRESTORE_BASE}/students`);
-      if (fsStudRes.ok) {
-        const fsStudData = await fsStudRes.json();
-        if (fsStudData.documents && fsStudData.documents.length > 0) {
-          const parsedStuds = fsStudData.documents.map(parseFirestoreDoc).filter(Boolean);
-          setStudents(prev => {
-            const merged = [...prev];
-            parsedStuds.forEach(fs => {
-              const idx = merged.findIndex(m => m.id === fs.id || (m.email && fs.email && m.email.toLowerCase() === fs.email.toLowerCase()));
-              if (idx >= 0) {
-                merged[idx] = { ...merged[idx], ...fs };
-              } else {
-                merged.push(fs);
-              }
-            });
-            try { localStorage.setItem('sa_cached_students', JSON.stringify(merged)); } catch {}
-            return merged;
-          });
-        }
+      // 1. If running on local server, check Python SQLite API first
+      let localDataLoaded = false;
+      const resp = await safeFetchJson(`${API_BASE}/api/system/data`);
+      if (resp.ok && resp.isJson && resp.data) {
+        const pyData = resp.data;
+        if (pyData.sections?.length > 0) setSections(pyData.sections);
+        if (pyData.subjects?.length > 0) setSubjects(pyData.subjects);
+        if (pyData.teachers?.length > 0) setTeachers(pyData.teachers);
+        if (pyData.students?.length > 0) setStudents(pyData.students);
+        if (pyData.activeSessions) setActiveSessions(pyData.activeSessions);
+        if (pyData.ncRecords) setNcRecords(pyData.ncRecords);
+        if (pyData.attendanceRecords) setAttendanceRecords(pyData.attendanceRecords);
+        if (pyData.marks) setMarks(pyData.marks);
+        if (pyData.firebase) setFirebaseStatus(pyData.firebase);
+        localDataLoaded = true;
       }
-    } catch (e) {
-      console.warn("Firestore students fetch skipped:", e);
-    }
 
-    // Supabase fallback only if online
-    try {
+      // 2. Fetch directly from Centralized Cloud Firestore
+      // Guarantees all devices (laptop, mobile phone, tablet) share the EXACT same data
       const [
-        { data: secData, error: secErr },
-        { data: subData, error: subErr },
-        { data: teachData, error: teachErr },
-        { data: studData, error: studErr },
-        { data: sessData, error: sessErr },
-        { data: ncData, error: ncErr }
+        fsStudents,
+        fsTeachers,
+        fsSubjects,
+        fsSections,
+        fsSessions,
+        fsAttendance,
+        fsNc,
+        fsMarks,
+        fsMarksConfig
       ] = await Promise.all([
-        supabase.from('sections').select('*'),
-        supabase.from('subjects').select('*'),
-        supabase.from('teachers').select('*'),
-        supabase.from('students').select('*'),
-        supabase.from('active_sessions').select('*'),
-        supabase.from('nc_records').select('*')
+        fetchFirestoreCollection('students'),
+        fetchFirestoreCollection('teachers'),
+        fetchFirestoreCollection('subjects'),
+        fetchFirestoreCollection('sections'),
+        fetchFirestoreCollection('active_sessions'),
+        fetchFirestoreCollection('attendance_records'),
+        fetchFirestoreCollection('nc_records'),
+        fetchFirestoreCollection('marks'),
+        fetchFirestoreCollection('marks_config')
       ]);
 
-      if (!secErr && secData && secData.length > 0) setSections(secData);
-      if (!subErr && subData && subData.length > 0) setSubjects(subData);
-
-      if (!teachErr && teachData && teachData.length > 0) {
-        const mappedTeachers = teachData.map(t => ({
-          id: t.id,
-          name: t.name,
-          email: t.email,
-          department: t.department,
-          assignedSubjects: t.assigned_subjects || [],
-          assignedSections: t.assigned_sections || [],
-          password: t.password || 'pass'
-        }));
-        setTeachers(mappedTeachers);
+      // Update Students
+      if (fsStudents && fsStudents.length > 0) {
+        setStudents(prev => {
+          const map = new Map();
+          // Seed with prev/defaults
+          prev.forEach(s => map.set(String(s.id), s));
+          // Overwrite with centralized Cloud Firestore data
+          fsStudents.forEach(s => {
+            const sid = String(s.id);
+            const existing = map.get(sid) || {};
+            map.set(sid, {
+              ...existing,
+              ...s,
+              id: Number(s.id) || s.id,
+              faceRegistered: Boolean(s.faceRegistered || s.face_registered),
+              faceImage: s.faceImage || s.face_image || existing.faceImage || '',
+            });
+          });
+          const merged = Array.from(map.values());
+          try { localStorage.setItem('sa_cached_students', JSON.stringify(merged)); } catch {}
+          return merged;
+        });
       }
 
-      if (!studErr && studData && studData.length > 0) {
-        const mappedStudents = studData.map(s => ({
-          id: Number(s.id),
-          name: s.name,
-          usn: s.usn,
-          email: s.email,
-          sectionId: s.section_id,
-          password: s.password || 'pass',
-          parentName: s.parent_name || s.parentName || '',
-          parentPhone: s.parent_phone || s.parentPhone || '',
-          faceRegistered: Boolean(s.face_registered),
-          faceImage: s.face_image || '',
-        }));
-        setStudents(mappedStudents);
+      // Update Teachers
+      if (fsTeachers && fsTeachers.length > 0) {
+        setTeachers(prev => {
+          const map = new Map();
+          prev.forEach(t => map.set(t.id, t));
+          fsTeachers.forEach(t => {
+            const existing = map.get(t.id) || {};
+            map.set(t.id, {
+              ...existing,
+              ...t,
+              assignedSubjects: t.assignedSubjects || t.assigned_subjects || existing.assignedSubjects || [],
+              assignedSections: t.assignedSections || t.assigned_sections || existing.assignedSections || []
+            });
+          });
+          const merged = Array.from(map.values());
+          try { localStorage.setItem('sa_cached_teachers', JSON.stringify(merged)); } catch {}
+          return merged;
+        });
       }
 
-      if (!sessErr && sessData && sessData.length > 0) {
-        const mappedSessions = sessData.map(s => ({
-          id: s.id,
-          teacherId: s.teacher_id,
-          subjectId: s.subject_id,
-          sectionId: s.section_id,
-          timerMinutes: s.timer_minutes,
-          startedAt: s.started_at,
-          presentStudents: s.present_students || [],
-          hash: s.hash,
-          teacherLat: s.teacher_lat || 0,
-          teacherLng: s.teacher_lng || 0
-        }));
-        setActiveSessions(mappedSessions);
+      // Update Subjects
+      if (fsSubjects && fsSubjects.length > 0) {
+        setSubjects(prev => {
+          const map = new Map();
+          prev.forEach(s => map.set(s.id, s));
+          fsSubjects.forEach(s => map.set(s.id, { ...map.get(s.id), ...s }));
+          const merged = Array.from(map.values());
+          try { localStorage.setItem('sa_cached_subjects', JSON.stringify(merged)); } catch {}
+          return merged;
+        });
       }
 
-      if (!ncErr && ncData && ncData.length > 0) {
-        const mappedNc = ncData.map(n => ({
-          id: n.id,
-          teacherId: n.teacher_id,
-          studentId: Number(n.student_id),
-          subjectId: n.subject_id,
-          reason: n.reason,
-          date: n.date,
-          hash: n.hash
-        }));
-        setNcRecords(mappedNc);
+      // Update Sections
+      if (fsSections && fsSections.length > 0) {
+        setSections(prev => {
+          const map = new Map();
+          prev.forEach(s => map.set(s.id, s));
+          fsSections.forEach(s => map.set(s.id, { ...map.get(s.id), ...s }));
+          const merged = Array.from(map.values());
+          try { localStorage.setItem('sa_cached_sections', JSON.stringify(merged)); } catch {}
+          return merged;
+        });
       }
+
+      // Update Active Sessions
+      if (fsSessions !== null) {
+        setActiveSessions(fsSessions);
+        try { localStorage.setItem('sa_active_sessions', JSON.stringify(fsSessions)); } catch {}
+      }
+
+      // Update NC Records
+      if (fsNc && fsNc.length > 0) {
+        setNcRecords(fsNc);
+      }
+
+      // Update Marks
+      if (fsMarks !== null) {
+        setMarks(fsMarks);
+        try { localStorage.setItem('sa_cached_marks', JSON.stringify(fsMarks)); } catch {}
+      }
+
+      // Update Marks Locks Config
+      if (fsMarksConfig && fsMarksConfig.length > 0) {
+        const lockMap = {};
+        fsMarksConfig.forEach(cfg => {
+          if (cfg.subjectId) lockMap[cfg.subjectId] = Boolean(cfg.locked);
+        });
+        setMarksLocks(lockMap);
+        try { localStorage.setItem('sa_cached_marks_locks', JSON.stringify(lockMap)); } catch {}
+      }
+
+      // Reconstruct Attendance Records from Cloud Firestore if available
+      if (fsAttendance && fsAttendance.length > 0) {
+        const reconstructed = {};
+        students.forEach(s => {
+          reconstructed[s.id] = {};
+          subjects.forEach(sub => {
+            reconstructed[s.id][sub.id] = {
+              records: [],
+              totalClasses: 0,
+              presentCount: 0,
+              absentCount: 0,
+              percentage: 0
+            };
+          });
+        });
+
+        fsAttendance.forEach(row => {
+          const sObj = students.find(s => s.usn === row.usn || String(s.id) === String(row.studentId || row.student_id));
+          const sId = sObj ? sObj.id : Number(row.studentId || row.student_id);
+          const subObj = subjects.find(s => s.code === row.subject || s.id === row.subject);
+          const subId = subObj ? subObj.id : row.subject;
+
+          if (sId && subId) {
+            if (!reconstructed[sId]) reconstructed[sId] = {};
+            if (!reconstructed[sId][subId]) {
+              reconstructed[sId][subId] = { records: [], totalClasses: 0, presentCount: 0, absentCount: 0, percentage: 0 };
+            }
+            reconstructed[sId][subId].records.push({
+              date: row.date,
+              time: row.time,
+              status: row.status,
+              txHash: row.blockchainHash || row.blockchain_hash || '',
+              verified: Boolean(row.verified),
+              reason: row.reason || ''
+            });
+          }
+        });
+
+        Object.keys(reconstructed).forEach(sId => {
+          Object.keys(reconstructed[sId]).forEach(subId => {
+            const item = reconstructed[sId][subId];
+            item.records.sort((a, b) => new Date(a.date) - new Date(b.date));
+            const total = item.records.length;
+            const present = item.records.filter(r => r.status === 'Present').length;
+            item.totalClasses = total;
+            item.presentCount = present;
+            item.absentCount = total - present;
+            item.percentage = total > 0 ? Math.round((present / total) * 100) : 0;
+          });
+        });
+
+        setAttendanceRecords(reconstructed);
+      }
+
     } catch (err) {
-      // Supabase unavailable, use local state
+      console.warn("System data synchronization encountered issue:", err);
+    } finally {
+      isFetchingRef.current = false;
     }
-  }, []);
+  }, [students, subjects]);
 
+  // Initial fetch and auto-sync timer (every 8 seconds for real-time cross-device updates)
   useEffect(() => {
     fetchSystemData();
+
+    const interval = setInterval(() => {
+      fetchSystemData();
+    }, 8000);
+
+    const onFocus = () => fetchSystemData();
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onFocus);
+    };
   }, [fetchSystemData]);
 
   // Dynamic system statistics calculations
@@ -353,68 +511,6 @@ export function AppProvider({ children }) {
     activeToday: activeSessions.length + ncRecords.filter(r => new Date(r.date).toDateString() === new Date().toDateString()).length,
     networkHealth: 100.0,
   };
-
-  // Load attendance records from Supabase on mount/change if needed
-  useEffect(() => {
-    const fetchSupabaseRecords = async () => {
-      try {
-        const { data, error } = await supabase.from('attendance_records').select('*');
-        if (error || !data || data.length === 0) return;
-
-        const reconstructed = {};
-        students.forEach(s => {
-          reconstructed[s.id] = {};
-          subjects.forEach(sub => {
-            reconstructed[s.id][sub.id] = {
-              records: [],
-              totalClasses: 0,
-              presentCount: 0,
-              absentCount: 0,
-              percentage: 0
-            };
-          });
-        });
-
-        data.forEach(row => {
-          const sId = Number(row.student_id);
-          const subObj = subjects.find(s => s.code === row.subject || s.id === row.subject);
-          const subId = subObj ? subObj.id : row.subject;
-
-          if (reconstructed[sId] && reconstructed[sId][subId]) {
-            reconstructed[sId][subId].records.push({
-              date: row.date,
-              time: row.time,
-              status: row.status,
-              txHash: row.blockchain_hash,
-              verified: Boolean(row.verified),
-              reason: row.reason || ''
-            });
-          }
-        });
-
-        Object.keys(reconstructed).forEach(studentId => {
-          Object.keys(reconstructed[studentId]).forEach(subjectId => {
-            const subAtt = reconstructed[studentId][subjectId];
-            subAtt.records.sort((a, b) => new Date(a.date) - new Date(b.date));
-            const total = subAtt.records.length;
-            const present = subAtt.records.filter(rec => rec.status === 'Present').length;
-            subAtt.totalClasses = total;
-            subAtt.presentCount = present;
-            subAtt.absentCount = total - present;
-            subAtt.percentage = total > 0 ? Math.round((present / total) * 100) : 0;
-          });
-        });
-
-        setAttendanceRecords(reconstructed);
-      } catch (err) {
-        // Ignored
-      }
-    };
-
-    if (students.length > 0 && subjects.length > 0 && Object.keys(attendanceRecords).length === 0) {
-      fetchSupabaseRecords();
-    }
-  }, [students, subjects]);
 
   // ─── Auth ───
   const login = useCallback(async (role, email, password) => {
@@ -437,7 +533,7 @@ export function AppProvider({ children }) {
       throw new Error(resp.data.detail);
     }
 
-    // 2. Offline / local fallback if backend server is unreachable (or on Vercel)
+    // 2. Cross-device Cloud / local fallback
     if (role === 'student') {
       const student = students.find(s => s.email.toLowerCase() === searchEmail || (s.usn && s.usn.toLowerCase() === searchEmail));
       if (!student) throw new Error(`No student found with email or USN '${email}'. Please contact Administrator or Register.`);
@@ -448,6 +544,7 @@ export function AppProvider({ children }) {
         .filter(t => t.assignedSections.includes(student.sectionId))
         .flatMap(t => t.assignedSubjects);
       const uniqueSubjectIds = studentSubjectIds.length > 0 ? [...new Set(studentSubjectIds)] : subjects.map(s => s.id);
+
       if (!attendanceRecords[student.id]) {
         setAttendanceRecords(prev => ({
           ...prev,
@@ -483,6 +580,7 @@ export function AppProvider({ children }) {
   }, [students, teachers, subjects, attendanceRecords, fetchSystemData]);
 
   const register = useCallback(async (role, userData) => {
+    // 1. Try local backend
     const resp = await safeFetchJson(`${API_BASE}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -494,11 +592,8 @@ export function AppProvider({ children }) {
       await fetchSystemData();
       return resp.data.user;
     }
-    if (!resp.ok && resp.isJson && resp.data?.detail) {
-      throw new Error(resp.data.detail);
-    }
 
-    // Client-side fallback for Vercel/offline
+    // 2. Centralized Cloud Firestore write for cross-device consistency
     if (role === 'student') {
       const newId = Date.now();
       const newStud = {
@@ -516,9 +611,11 @@ export function AppProvider({ children }) {
       };
       setStudents(prev => {
         const updated = [...prev, newStud];
-        localStorage.setItem('sa_cached_students', JSON.stringify(updated));
+        try { localStorage.setItem('sa_cached_students', JSON.stringify(updated)); } catch {}
         return updated;
       });
+      syncDocToFirestore('students', newId, newStud);
+
       const user = { ...newStud, role: 'student', subjectIds: subjects.map(s => s.id) };
       setCurrentUser(user);
       return user;
@@ -535,9 +632,11 @@ export function AppProvider({ children }) {
       };
       setTeachers(prev => {
         const updated = [...prev, newTeacher];
-        localStorage.setItem('sa_cached_teachers', JSON.stringify(updated));
+        try { localStorage.setItem('sa_cached_teachers', JSON.stringify(updated)); } catch {}
         return updated;
       });
+      syncDocToFirestore('teachers', newId, newTeacher);
+
       const user = { ...newTeacher, role: 'teacher' };
       setCurrentUser(user);
       return user;
@@ -547,10 +646,14 @@ export function AppProvider({ children }) {
 
   const clearDatabase = useCallback(async () => {
     safeFetchJson(`${API_BASE}/api/database/clear`, { method: 'POST' });
-    localStorage.removeItem('sa_cached_students');
-    localStorage.removeItem('sa_cached_teachers');
+    try {
+      localStorage.removeItem('sa_cached_students');
+      localStorage.removeItem('sa_cached_teachers');
+      localStorage.removeItem('sa_cached_marks');
+    } catch {}
     setStudents(initialStudents);
     setTeachers(initialTeachers);
+    setMarks([]);
   }, []);
 
   const logout = useCallback(() => setCurrentUser(null), []);
@@ -558,41 +661,44 @@ export function AppProvider({ children }) {
   // ─── Admin: Manage Teachers ───
   const addTeacher = useCallback((teacher) => {
     const newId = `t${Date.now()}`;
-    const newTeacher = { ...teacher, id: newId };
+    const newTeacher = {
+      ...teacher,
+      id: newId,
+      assignedSubjects: teacher.assignedSubjects || [],
+      assignedSections: teacher.assignedSections || [],
+      password: teacher.password || 'pass'
+    };
+
     setTeachers(prev => {
       const updated = [...prev, newTeacher];
-      localStorage.setItem('sa_cached_teachers', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_teachers', JSON.stringify(updated)); } catch {}
       return updated;
     });
 
     safeFetchJson(`${API_BASE}/api/teachers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: newId,
-        name: teacher.name,
-        email: teacher.email,
-        department: teacher.department,
-        assignedSubjects: teacher.assignedSubjects || [],
-        assignedSections: teacher.assignedSections || [],
-        password: teacher.password || 'pass'
-      })
+      body: JSON.stringify(newTeacher)
     });
+
+    // Centralized Cloud Firestore write
+    syncDocToFirestore('teachers', newId, newTeacher);
   }, []);
 
   const deleteTeacher = useCallback((id) => {
     setTeachers(prev => {
       const updated = prev.filter(t => t.id !== id);
-      localStorage.setItem('sa_cached_teachers', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_teachers', JSON.stringify(updated)); } catch {}
       return updated;
     });
     safeFetchJson(`${API_BASE}/api/teachers/${id}`, { method: 'DELETE' });
+    deleteDocFromFirestore('teachers', id);
   }, []);
 
   const updateTeacherAssignments = useCallback((teacherId, assignedSubjects, assignedSections) => {
     setTeachers(prev => {
       const updated = prev.map(t => (t.id === teacherId ? { ...t, assignedSubjects, assignedSections } : t));
-      localStorage.setItem('sa_cached_teachers', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_teachers', JSON.stringify(updated)); } catch {}
       return updated;
     });
     safeFetchJson(`${API_BASE}/api/teachers/${teacherId}/assignments`, {
@@ -600,6 +706,7 @@ export function AppProvider({ children }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assignedSubjects, assignedSections })
     });
+    syncDocToFirestore('teachers', teacherId, { assignedSubjects, assignedSections });
   }, []);
 
   // ─── Admin: Manage Students ───
@@ -612,11 +719,13 @@ export function AppProvider({ children }) {
       faceDescriptor: [],
       faceImage: '',
       parentName: student.parentName || '',
-      parentPhone: student.parentPhone || ''
+      parentPhone: student.parentPhone || '',
+      password: student.password || 'pass'
     };
+
     setStudents(prev => {
       const updated = [...prev, newStudent];
-      localStorage.setItem('sa_cached_students', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_students', JSON.stringify(updated)); } catch {}
       return updated;
     });
 
@@ -633,46 +742,33 @@ export function AppProvider({ children }) {
     safeFetchJson(`${API_BASE}/api/students`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: newId,
-        name: student.name,
-        usn: student.usn,
-        email: student.email,
-        sectionId: student.sectionId,
-        password: student.password || 'pass',
-        parentName: student.parentName || '',
-        parentPhone: student.parentPhone || ''
-      })
+      body: JSON.stringify(newStudent)
     });
+
+    // Centralized Cloud Firestore write (enables immediate sync to other phones & laptops!)
+    syncDocToFirestore('students', newId, newStudent);
   }, [teachers, subjects]);
 
   const updateStudent = useCallback((studentId, updatedData) => {
     setStudents(prev => {
       const updated = prev.map(s => (s.id === studentId ? { ...s, ...updatedData } : s));
-      localStorage.setItem('sa_cached_students', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_students', JSON.stringify(updated)); } catch {}
       return updated;
     });
 
     safeFetchJson(`${API_BASE}/api/students/${studentId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: studentId,
-        name: updatedData.name,
-        usn: updatedData.usn,
-        email: updatedData.email,
-        sectionId: updatedData.sectionId,
-        password: updatedData.password || undefined,
-        parentName: updatedData.parentName || '',
-        parentPhone: updatedData.parentPhone || ''
-      })
+      body: JSON.stringify({ id: studentId, ...updatedData })
     });
+
+    syncDocToFirestore('students', studentId, updatedData);
   }, []);
 
   const deleteStudent = useCallback((id) => {
     setStudents(prev => {
       const updated = prev.filter(s => s.id !== id);
-      localStorage.setItem('sa_cached_students', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_students', JSON.stringify(updated)); } catch {}
       return updated;
     });
     setAttendanceRecords(prev => {
@@ -682,67 +778,50 @@ export function AppProvider({ children }) {
     });
 
     safeFetchJson(`${API_BASE}/api/students/${id}`, { method: 'DELETE' });
+    deleteDocFromFirestore('students', id);
   }, []);
 
   // ─── Face Biometrics Management ───
   const enrollStudentFace = useCallback(async (studentId, imageData) => {
+    const nowIso = new Date().toISOString();
+
     const resp = await safeFetchJson(`${API_BASE}/api/students/${studentId}/enroll-face`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ imageData })
     });
-    if (resp.ok && resp.isJson && resp.data) {
-      setStudents(prev => {
-        const updated = prev.map(s => s.id === studentId ? {
-          ...s,
-          faceRegistered: true,
-          faceImage: resp.data.thumbnail || imageData,
-          faceEnrolledAt: resp.data.enrolledAt
-        } : s);
-        localStorage.setItem('sa_cached_students', JSON.stringify(updated));
-        return updated;
-      });
-      return resp.data;
-    }
 
-    // Client-side fallback for Vercel / offline mode
-    const nowIso = new Date().toISOString();
+    const thumb = resp.ok && resp.isJson && resp.data?.thumbnail ? resp.data.thumbnail : imageData;
+
     setStudents(prev => {
       const updated = prev.map(s => s.id === studentId ? {
         ...s,
         faceRegistered: true,
-        faceImage: imageData,
+        faceImage: thumb,
         faceEnrolledAt: nowIso
       } : s);
-      localStorage.setItem('sa_cached_students', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_students', JSON.stringify(updated)); } catch {}
       return updated;
+    });
+
+    // Sync face biometric to Centralized Cloud Firestore so any device can verify student
+    syncDocToFirestore('students', studentId, {
+      faceRegistered: true,
+      faceImage: thumb,
+      faceEnrolledAt: nowIso
     });
 
     return {
       success: true,
-      thumbnail: imageData,
+      thumbnail: thumb,
       enrolledAt: nowIso
     };
   }, []);
 
   const removeStudentFace = useCallback(async (studentId) => {
-    const resp = await safeFetchJson(`${API_BASE}/api/students/${studentId}/remove-face`, {
+    safeFetchJson(`${API_BASE}/api/students/${studentId}/remove-face`, {
       method: 'DELETE'
     });
-    if (resp.ok && resp.isJson) {
-      setStudents(prev => {
-        const updated = prev.map(s => s.id === studentId ? {
-          ...s,
-          faceRegistered: false,
-          faceDescriptor: [],
-          faceImage: '',
-          faceEnrolledAt: ''
-        } : s);
-        localStorage.setItem('sa_cached_students', JSON.stringify(updated));
-        return updated;
-      });
-      return resp.data;
-    }
 
     setStudents(prev => {
       const updated = prev.map(s => s.id === studentId ? {
@@ -752,8 +831,15 @@ export function AppProvider({ children }) {
         faceImage: '',
         faceEnrolledAt: ''
       } : s);
-      localStorage.setItem('sa_cached_students', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_students', JSON.stringify(updated)); } catch {}
       return updated;
+    });
+
+    syncDocToFirestore('students', studentId, {
+      faceRegistered: false,
+      faceDescriptor: [],
+      faceImage: '',
+      faceEnrolledAt: ''
     });
 
     return { success: true };
@@ -774,15 +860,12 @@ export function AppProvider({ children }) {
         return resp.data;
       }
       if (!resp.ok && resp.isJson && resp.data?.detail) {
-        // Real validation error from server (e.g. face mismatch)
         throw new Error(resp.data.detail);
       }
     } catch (err) {
-      // Re-throw genuine face verification rejection from Python
       if (err.message && (err.message.includes('mismatch') || err.message.includes('No human face') || err.message.includes('threshold') || err.message.includes('confidence'))) {
         throw err;
       }
-      console.warn("Backend API not reachable or returned non-JSON, using client-side biometric matching:", err);
     }
 
     // 2. Client-side fallback for Vercel / mobile deployment
@@ -814,7 +897,6 @@ export function AppProvider({ children }) {
       throw new Error("No camera frame captured. Please position your face inside the circle.");
     }
 
-    // Perform deep client-side biometric feature matching against enrolled face
     if (stud.faceImage) {
       const match = await compareFaceBiometricsClientSide(stud.faceImage, imageData, 0.74);
       if (!match.verified) {
@@ -851,7 +933,6 @@ export function AppProvider({ children }) {
       return resp.data;
     }
 
-    // Client-side direct URL generation for mobile devices
     const digits = (parentPhone || '').replace(/\D/g, '');
     let cleanPhone = digits;
     if (digits.length === 10) cleanPhone = '91' + digits;
@@ -872,7 +953,7 @@ export function AppProvider({ children }) {
     const newSection = { ...section, id: newId };
     setSections(prev => {
       const updated = [...prev, newSection];
-      localStorage.setItem('sa_cached_sections', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_sections', JSON.stringify(updated)); } catch {}
       return updated;
     });
 
@@ -881,15 +962,18 @@ export function AppProvider({ children }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: newId, name: section.name, year: section.year })
     });
+
+    syncDocToFirestore('sections', newId, newSection);
   }, []);
 
   const deleteSection = useCallback((id) => {
     setSections(prev => {
       const updated = prev.filter(s => s.id !== id);
-      localStorage.setItem('sa_cached_sections', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_sections', JSON.stringify(updated)); } catch {}
       return updated;
     });
     safeFetchJson(`${API_BASE}/api/sections/${id}`, { method: 'DELETE' });
+    deleteDocFromFirestore('sections', id);
   }, []);
 
   // ─── Admin: Manage Subjects ───
@@ -898,7 +982,7 @@ export function AppProvider({ children }) {
     const newSubject = { ...subject, id: newId };
     setSubjects(prev => {
       const updated = [...prev, newSubject];
-      localStorage.setItem('sa_cached_subjects', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_subjects', JSON.stringify(updated)); } catch {}
       return updated;
     });
 
@@ -907,15 +991,18 @@ export function AppProvider({ children }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: newId, name: subject.name, code: subject.code })
     });
+
+    syncDocToFirestore('subjects', newId, newSubject);
   }, []);
 
   const deleteSubject = useCallback((id) => {
     setSubjects(prev => {
       const updated = prev.filter(s => s.id !== id);
-      localStorage.setItem('sa_cached_subjects', JSON.stringify(updated));
+      try { localStorage.setItem('sa_cached_subjects', JSON.stringify(updated)); } catch {}
       return updated;
     });
     safeFetchJson(`${API_BASE}/api/subjects/${id}`, { method: 'DELETE' });
+    deleteDocFromFirestore('subjects', id);
   }, []);
 
   // ─── Teacher: Sessions ───
@@ -947,13 +1034,7 @@ export function AppProvider({ children }) {
       body: JSON.stringify(newSession)
     });
 
-    // Cloud Firestore synchronization for cross-device & mobile access
-    fetch(`${FIRESTORE_BASE}/active_sessions?documentId=${sessionId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toFirestoreFields(newSession))
-    }).catch(e => console.warn("Firestore startSession sync skipped:", e));
-
+    syncDocToFirestore('active_sessions', sessionId, newSession);
     return newSession;
   }, []);
 
@@ -968,31 +1049,32 @@ export function AppProvider({ children }) {
     sectionStudents.forEach(student => {
       const isPresent = session.presentStudents.includes(student.id);
       const txHash = generateBlockchainHash();
+      const attRecord = {
+        id: `att_${student.id}_${session.id}`,
+        studentId: student.id,
+        studentName: student.name,
+        usn: student.usn,
+        subject: subjects.find(s => s.id === session.subjectId)?.code || session.subjectId,
+        date: dateStr,
+        time: timeStr,
+        status: isPresent ? 'Present' : 'Absent',
+        blockchainHash: txHash,
+        locationLat: session.teacherLat,
+        locationLng: session.teacherLng,
+        verified: isPresent
+      };
 
       safeFetchJson(`${API_BASE}/api/attendance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentId: student.id,
-          studentName: student.name,
-          usn: student.usn,
-          subject: subjects.find(s => s.id === session.subjectId)?.code || session.subjectId,
-          date: dateStr,
-          time: timeStr,
-          status: isPresent ? 'Present' : 'Absent',
-          blockchainHash: txHash,
-          locationLat: session.teacherLat,
-          locationLng: session.teacherLng,
-          verified: isPresent
-        })
+        body: JSON.stringify(attRecord)
       });
+
+      syncDocToFirestore('attendance_records', attRecord.id, attRecord);
     });
 
     safeFetchJson(`${API_BASE}/api/sessions/${sessionId}/end`, { method: 'POST' });
-
-    // Remove from Cloud Firestore
-    fetch(`${FIRESTORE_BASE}/active_sessions/${sessionId}`, { method: 'DELETE' })
-      .catch(e => console.warn("Firestore endSession sync skipped:", e));
+    deleteDocFromFirestore('active_sessions', sessionId);
 
     setActiveSessions(prev => {
       const updated = prev.filter(s => s.id !== sessionId);
@@ -1007,21 +1089,7 @@ export function AppProvider({ children }) {
       const updated = prev.map(s => {
         if (s.id === sessionId && !s.presentStudents.includes(studentId)) {
           const newPresent = [...s.presentStudents, studentId];
-          // Cloud update for active session attendance
-          fetch(`${FIRESTORE_BASE}/active_sessions/${sessionId}?updateMask.fieldPaths=presentStudents`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              fields: {
-                presentStudents: {
-                  arrayValue: {
-                    values: newPresent.map(id => ({ integerValue: String(id) }))
-                  }
-                }
-              }
-            })
-          }).catch(e => console.warn("Firestore markAttendance sync skipped:", e));
-
+          syncDocToFirestore('active_sessions', sessionId, { ...s, presentStudents: newPresent });
           return { ...s, presentStudents: newPresent };
         }
         return s;
@@ -1059,6 +1127,7 @@ export function AppProvider({ children }) {
       body: JSON.stringify(newNC)
     });
 
+    syncDocToFirestore('nc_records', id, newNC);
     return id;
   }, []);
 
@@ -1107,33 +1176,123 @@ export function AppProvider({ children }) {
 
     const stud = students.find(s => s.id === studentId);
     const sub = subjects.find(s => s.id === subjectId);
+    const attRecord = {
+      id: `att_${studentId}_${Date.now()}`,
+      studentId,
+      studentName: stud?.name || 'Student',
+      usn: stud?.usn || 'USN',
+      subject: sub?.code || subjectId,
+      date: dateStr,
+      time: timeStr,
+      status: 'Present',
+      blockchainHash: hash,
+      locationLat: 12.9786,
+      locationLng: 77.3640,
+      verified: true
+    };
 
     safeFetchJson(`${API_BASE}/api/attendance`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        studentId,
-        studentName: stud?.name || 'Student',
-        usn: stud?.usn || 'USN',
-        subject: sub?.code || subjectId,
-        date: dateStr,
-        time: timeStr,
-        status: 'Present',
-        blockchainHash: hash,
-        locationLat: 12.9786,
-        locationLng: 77.3640,
-        verified: true
-      })
+      body: JSON.stringify(attRecord)
     });
+
+    syncDocToFirestore('attendance_records', attRecord.id, attRecord);
 
     return hash;
   }, [students, subjects]);
+
+  // ─── Marks Management System Operations ───
+
+  // Save / Update one or multiple marks records
+  const saveMarks = useCallback(async (marksInput) => {
+    const items = Array.isArray(marksInput) ? marksInput : [marksInput];
+    const nowIso = new Date().toISOString();
+
+    const prepared = items.map(m => {
+      const markId = m.id || `${m.studentId}_${m.subjectId}`;
+      return {
+        ...m,
+        id: markId,
+        cie1: m.cie1 !== undefined && m.cie1 !== null && m.cie1 !== '' ? Number(m.cie1) : null,
+        cie2: m.cie2 !== undefined && m.cie2 !== null && m.cie2 !== '' ? Number(m.cie2) : null,
+        see: m.see !== undefined && m.see !== null && m.see !== '' ? Number(m.see) : null,
+        maxCie1: m.maxCie1 || 50.0,
+        maxCie2: m.maxCie2 || 50.0,
+        maxSee: m.maxSee || 100.0,
+        updatedAt: nowIso,
+        updatedBy: m.updatedBy || currentUser?.email || 'admin',
+        locked: Boolean(m.locked)
+      };
+    });
+
+    // 1. Update React State
+    setMarks(prev => {
+      const map = new Map();
+      prev.forEach(item => map.set(item.id, item));
+      prepared.forEach(item => map.set(item.id, item));
+      const updated = Array.from(map.values());
+      try { localStorage.setItem('sa_cached_marks', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+
+    // 2. Send to local Python SQLite backend (if running)
+    safeFetchJson(`${API_BASE}/api/marks/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marks: prepared })
+    });
+
+    // 3. Centralized Cloud Firestore write (guarantees cross-device sync across Mobile & Laptop)
+    await Promise.all(
+      prepared.map(m => syncDocToFirestore('marks', m.id, m))
+    );
+
+    return prepared;
+  }, [currentUser]);
+
+  // Delete a mark record
+  const deleteMark = useCallback(async (markId) => {
+    setMarks(prev => {
+      const updated = prev.filter(m => m.id !== markId);
+      try { localStorage.setItem('sa_cached_marks', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+
+    safeFetchJson(`${API_BASE}/api/marks/${markId}`, { method: 'DELETE' });
+    await deleteDocFromFirestore('marks', markId);
+  }, []);
+
+  // Admin controls teacher permissions: lock/unlock marks submission for a subject
+  const toggleMarksLock = useCallback(async (subjectId, locked) => {
+    setMarksLocks(prev => {
+      const updated = { ...prev, [subjectId]: locked };
+      try { localStorage.setItem('sa_cached_marks_locks', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+
+    setMarks(prev => {
+      const updated = prev.map(m => m.subjectId === subjectId ? { ...m, locked } : m);
+      try { localStorage.setItem('sa_cached_marks', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+
+    safeFetchJson(`${API_BASE}/api/marks/lock`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subjectId, locked })
+    });
+
+    // Sync lock status to Cloud Firestore
+    syncDocToFirestore('marks_config', subjectId, { subjectId, locked });
+  }, []);
 
   const value = {
     // State
     students, teachers, subjects, sections, currentUser,
     attendanceRecords, activeSessions, ncRecords, stats,
     firebaseStatus,
+    marks, marksLocks,
     // Auth & DB operations
     login, logout, register, clearDatabase, fetchSystemData, refreshSessions,
     // Admin actions
@@ -1146,6 +1305,8 @@ export function AppProvider({ children }) {
     startSession, endSession, markAttendance, markNC,
     // Student actions
     studentMarkAttendance,
+    // Marks Management actions
+    saveMarks, deleteMark, toggleMarksLock,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
