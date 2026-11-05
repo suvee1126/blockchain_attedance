@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   initialStudents, initialTeachers, initialSubjects,
   initialSections, generateSubjectAttendance, systemStats,
