@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../AppContext';
 import { shortenHash } from '../utils';
@@ -332,25 +332,22 @@ export default function AdminDashboard() {
     setEditingStudent(null);
   };
 
-  // ─── Actions: User Security & Account Management ───
-  const handleToggleUserAccount = async (role, userId, currentActive) => {
+  // ─── Actions: User Security & Account Management (Optimistic Zero-Lag) ───
+  const [togglingUserId, setTogglingUserId] = useState(null);
+
+  const handleToggleUserAccount = (role, userId, currentActive) => {
     const nextStatus = !currentActive;
-    const actionWord = nextStatus ? 'activate' : 'disable';
-    if (!window.confirm(`Are you sure you want to ${actionWord} this account?`)) {
-      return;
+    setTogglingUserId(userId);
+
+    // Instant optimistic toggle
+    if (adminToggleUserStatus) {
+      adminToggleUserStatus(role, userId, nextStatus);
     }
-    setIsProcessingUserAction(true);
-    try {
-      if (adminToggleUserStatus) {
-        await adminToggleUserStatus(role, userId, nextStatus);
-      }
-      setUserActionToast(`Account successfully ${nextStatus ? 'activated' : 'disabled'}!`);
-      setTimeout(() => setUserActionToast(''), 4000);
-    } catch (err) {
-      alert("Failed to change account status: " + err.message);
-    } finally {
-      setIsProcessingUserAction(false);
-    }
+    setUserActionToast(`Account ${nextStatus ? 'activated' : 'disabled'}!`);
+    setTimeout(() => {
+      setTogglingUserId(null);
+      setUserActionToast('');
+    }, 2000);
   };
 
   const handleAdminSendResetOtp = async (role, userId, email) => {
@@ -599,7 +596,7 @@ export default function AdminDashboard() {
                       </tr>
                     ) : (
                       teachers.map((teacher) => (
-                        <tr key={teacher.id} className="hover:bg-slate-50/50">
+                        <tr key={`d_teacher_${teacher.id}`} className="hover:bg-slate-50/50">
                           <td className="py-4 px-6 font-extrabold text-slate-800">{teacher.name}</td>
                           <td className="py-4 px-6 text-slate-500 font-mono text-xs">{teacher.email}</td>
                           <td className="py-4 px-6">
@@ -664,7 +661,7 @@ export default function AdminDashboard() {
                   </div>
                 ) : (
                   teachers.map((teacher) => (
-                    <div key={teacher.id} className="p-4 space-y-3 bg-white">
+                    <div key={`m_teacher_${teacher.id}`} className="p-4 space-y-3 bg-white">
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <p className="font-extrabold text-slate-900 text-sm">{teacher.name}</p>
@@ -778,7 +775,7 @@ export default function AdminDashboard() {
                         const cleanPhone = (student.parentPhone || '').replace(/[^0-9]/g, '');
                         const waNumber = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
                         return (
-                          <tr key={student.id} className="hover:bg-slate-50/50 transition-colors">
+                          <tr key={`d_student_${student.id}`} className="hover:bg-slate-50/50 transition-colors">
                             <td className="py-4 px-6">
                               <div>
                                 <p className="font-extrabold text-slate-800">{student.name}</p>
@@ -896,7 +893,7 @@ export default function AdminDashboard() {
                     const cleanPhone = (student.parentPhone || '').replace(/[^0-9]/g, '');
                     const waNumber = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
                     return (
-                      <div key={student.id} className="p-4 space-y-3 bg-white">
+                      <div key={`m_student_${student.id}`} className="p-4 space-y-3 bg-white">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <p className="font-extrabold text-slate-900 text-sm">{student.name}</p>
@@ -1117,7 +1114,6 @@ export default function AdminDashboard() {
                               </tr>
                             ) : (
                               secStudents.map(student => {
-                                const { attendanceRecords } = useApp(); // Access dynamic store state
                                 const studentAtt = attendanceRecords[student.id] || {};
                                 return (
                                   <tr key={student.id} className="hover:bg-slate-50/40 transition-colors">
@@ -1593,7 +1589,7 @@ export default function AdminDashboard() {
                           }
 
                           return (
-                            <tr key={m.id} className="hover:bg-slate-50/60 transition-colors">
+                            <tr key={`d_mark_${m.id}`} className="hover:bg-slate-50/60 transition-colors">
                               <td className="py-3.5 px-5">
                                 <p className="font-extrabold text-slate-900">{m.studentName}</p>
                                 <p className="text-[10px] font-mono font-bold text-slate-400">USN: {m.usn}</p>
@@ -2034,8 +2030,10 @@ export default function AdminDashboard() {
                                 <>
                                   <button
                                     onClick={() => handleToggleUserAccount(u.role, u.id, u.isActive)}
-                                    disabled={isProcessingUserAction}
+                                    disabled={togglingUserId === u.id}
                                     className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
+                                      togglingUserId === u.id ? "opacity-60 cursor-wait" : ""
+                                    } ${
                                       u.isActive
                                         ? 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100'
                                         : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'
@@ -2107,8 +2105,10 @@ export default function AdminDashboard() {
                           <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
                             <button
                               onClick={() => handleToggleUserAccount(u.role, u.id, u.isActive)}
-                              disabled={isProcessingUserAction}
+                              disabled={togglingUserId === u.id}
                               className={`flex-1 min-h-[42px] px-3 py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer text-center ${
+                                togglingUserId === u.id ? "opacity-60 cursor-wait" : ""
+                              } ${
                                 u.isActive
                                   ? 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100'
                                   : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'

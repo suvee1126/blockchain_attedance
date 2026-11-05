@@ -27,10 +27,21 @@ const API_BASE = typeof window !== 'undefined' && window.location.port === '5173
   ? 'http://localhost:8000'
   : '';
 
-// Safe fetch helper that guarantees no "Unexpected end of JSON input" errors on static hosts like Vercel
+// Safe fetch helper that guarantees no network hangs or mixed content lag
 async function safeFetchJson(url, options = {}) {
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+  if (isHttps && (url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1'))) {
+    return { ok: false, isJson: false, status: 0, data: null, error: 'Local backend skipped on HTTPS' };
+  }
+
   try {
-    const res = await fetch(url, options);
+    const controller = new AbortController();
+    const timeoutMs = options.timeout || 2500;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timer);
+
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
       return { ok: false, isJson: false, status: res.status, data: null };
@@ -104,15 +115,24 @@ function toFirestoreFields(obj) {
   return { fields };
 }
 
-// Global Cloud Firestore Helpers that run on ALL devices (Mobile, Laptop, Vercel)
-async function syncDocToFirestore(collection, docId, data) {
+// Global Cloud Firestore Helpers that run on ALL devices with non-blocking timeout
+async function syncDocToFirestore(collection, docId, data, updateMask = null) {
   if (!docId) return;
   try {
-    await fetch(`${FIRESTORE_BASE}/${collection}/${encodeURIComponent(String(docId))}`, {
+    let url = `${FIRESTORE_BASE}/${collection}/${encodeURIComponent(String(docId))}`;
+    if (updateMask && Array.isArray(updateMask)) {
+      const maskQuery = updateMask.map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
+      url += `?${maskQuery}`;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    await fetch(url, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toFirestoreFields(data))
+      body: JSON.stringify(toFirestoreFields(data)),
+      signal: controller.signal
     });
+    clearTimeout(timer);
   } catch (err) {
     console.warn(`Firestore sync warning for ${collection}/${docId}:`, err);
   }
@@ -514,19 +534,23 @@ export function AppProvider({ children }) {
   }, [fetchSystemData]);
 
   // Dynamic system statistics calculations
-  const totalTx = Object.values(attendanceRecords).reduce((acc, studentAtt) => {
-    return acc + Object.values(studentAtt).reduce((subAcc, subAtt) => {
-      return subAcc + (subAtt.records?.length || 0);
-    }, 0);
-  }, 0) + ncRecords.length;
+  const totalTx = useMemo(() => {
+    return Object.values(attendanceRecords).reduce((acc, studentAtt) => {
+      return acc + Object.values(studentAtt).reduce((subAcc, subAtt) => {
+        return subAcc + (subAtt.records?.length || 0);
+      }, 0);
+    }, 0) + ncRecords.length;
+  }, [attendanceRecords, ncRecords.length]);
 
-  const stats = {
-    totalSessions: activeSessions.length + Math.round(totalTx / 10),
-    totalUsers: students.length + teachers.length + 1,
-    totalTransactions: totalTx,
-    activeToday: activeSessions.length + ncRecords.filter(r => new Date(r.date).toDateString() === new Date().toDateString()).length,
-    networkHealth: 100.0,
-  };
+  const stats = useMemo(() => {
+    return {
+      totalSessions: activeSessions.length + Math.round(totalTx / 10),
+      totalUsers: students.length + teachers.length + 1,
+      totalTransactions: totalTx,
+      activeToday: activeSessions.length + ncRecords.filter(r => new Date(r.date).toDateString() === new Date().toDateString()).length,
+      networkHealth: 100.0,
+    };
+  }, [activeSessions.length, totalTx, students.length, teachers.length, ncRecords]);
 
   // ─── Auth ───
   const login = useCallback(async (role, email, password) => {
@@ -1436,20 +1460,30 @@ export function AppProvider({ children }) {
     return { success: true, message: "Password updated successfully!" };
   }, []);
 
-  const adminToggleUserStatus = useCallback(async (role, userId, isActive) => {
+  const adminToggleUserStatus = useCallback((role, userId, isActive) => {
+    // 1. Instantaneous optimistic update in React state & localStorage (0ms latency)
+    if (role === 'student') {
+      setStudents(prev => {
+        const updated = prev.map(s => String(s.id) === String(userId) ? { ...s, isActive } : s);
+        try { localStorage.setItem('sa_cached_students', JSON.stringify(updated)); } catch {}
+        return updated;
+      });
+      syncDocToFirestore('students', String(userId), { isActive }, ['isActive']).catch(() => {});
+    } else if (role === 'teacher') {
+      setTeachers(prev => {
+        const updated = prev.map(t => String(t.id) === String(userId) ? { ...t, isActive } : t);
+        try { localStorage.setItem('sa_cached_teachers', JSON.stringify(updated)); } catch {}
+        return updated;
+      });
+      syncDocToFirestore('teachers', String(userId), { isActive }, ['isActive']).catch(() => {});
+    }
+
+    // 2. Fire-and-forget background sync
     safeFetchJson(`${API_BASE}/api/admin/users/toggle-status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ role, userId: String(userId), isActive })
-    });
-
-    if (role === 'student') {
-      setStudents(prev => prev.map(s => String(s.id) === String(userId) ? { ...s, isActive } : s));
-      syncDocToFirestore('students', String(userId), { isActive });
-    } else if (role === 'teacher') {
-      setTeachers(prev => prev.map(t => String(t.id) === String(userId) ? { ...t, isActive } : t));
-      syncDocToFirestore('teachers', String(userId), { isActive });
-    }
+    }).catch(() => {});
   }, []);
 
   const adminRequestUserReset = useCallback(async (role, userId, email) => {

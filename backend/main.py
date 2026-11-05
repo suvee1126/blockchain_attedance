@@ -853,6 +853,28 @@ async def toggle_marks_lock(req: MarksLockRequest):
     set_marks_lock(req.subjectId, req.locked)
     return {"success": True, "subjectId": req.subjectId, "locked": req.locked}
 
+# ─── Admin User Management Endpoints ───
+
+@app.post("/api/admin/users/toggle-status")
+async def admin_toggle_user_status(req: ToggleUserStatusRequest):
+    set_user_account_status(req.role, req.userId, req.isActive)
+    return {"success": True, "role": req.role, "userId": req.userId, "isActive": req.isActive}
+
+@app.post("/api/admin/users/request-reset")
+async def admin_request_user_reset(req: AdminResetRequest):
+    otp = generate_secure_otp()
+    set_user_otp(req.role, req.email, otp, "reset")
+    send_verification_email(req.email, otp, "reset")
+    return {"success": True, "message": f"Password reset OTP sent to {req.email}", "email": req.email}
+
+@app.get("/api/admin/users")
+async def admin_get_all_users():
+    return {
+        "students": get_students(),
+        "teachers": get_teachers(),
+        "admins": get_admins()
+    }
+
 # ─── Blockchain Ledger Endpoints ───
 
 @app.get("/api/blockchain/chain")
