@@ -940,17 +940,21 @@ def check_duplicate_account(role: str, email: str = "", phone: str = "") -> Tupl
     conn = get_db_connection()
     for tbl in ['admins', 'teachers', 'students']:
         if clean_email:
-            r = conn.execute(f"SELECT id FROM {tbl} WHERE LOWER(email) = ?", (clean_email,)).fetchone()
+            r = conn.execute(f"SELECT id, is_verified FROM {tbl} WHERE LOWER(email) = ?", (clean_email,)).fetchone()
             if r:
-                conn.close()
-                return True, f"An account with email '{clean_email}' already exists. Please Sign In."
+                is_ver = bool(r[1]) if len(r) > 1 and r[1] is not None else True
+                if is_ver:
+                    conn.close()
+                    return True, f"An account with email '{clean_email}' already exists. Please Sign In."
         if clean_phone:
-            r = conn.execute(f"SELECT id, phone FROM {tbl} WHERE phone IS NOT NULL AND phone != ''").fetchall()
+            r = conn.execute(f"SELECT id, phone, is_verified FROM {tbl} WHERE phone IS NOT NULL AND phone != ''").fetchall()
             for row in r:
                 stored_digits = re.sub(r'[^0-9]', '', row[1] or "")
                 if stored_digits and stored_digits[-10:] == clean_phone:
-                    conn.close()
-                    return True, f"An account with mobile number '{phone}' already exists. Please Sign In."
+                    is_ver = bool(row[2]) if len(row) > 2 and row[2] is not None else True
+                    if is_ver:
+                        conn.close()
+                        return True, f"An account with mobile number '{phone}' already exists. Please Sign In."
     conn.close()
     return False, ""
 

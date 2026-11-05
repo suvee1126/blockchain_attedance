@@ -108,16 +108,24 @@ async def send_otp_endpoint(req: SendOtpRequest):
     # Real dispatch via configured provider
     if method == "mobile":
         dispatch = send_verification_sms(identifier, otp, f"Smart Attendance {purpose.capitalize()}")
+        is_sent = dispatch.get("smsSent", False)
     else:
         dispatch = send_verification_email(identifier, otp, f"Smart Attendance {purpose.capitalize()}")
+        is_sent = dispatch.get("emailSent", False)
+
+    err_notice = dispatch.get("error")
 
     return {
         "success": True,
         "method": method,
         "identifier": identifier,
         "expiresInSeconds": 300,
-        "message": f"6-digit verification code dispatched to {identifier}.",
-        "devOtp": dispatch.get("otp") if not (dispatch.get("emailSent") or dispatch.get("smsSent")) else None
+        "emailSent": is_sent if method == "email" else False,
+        "smsSent": is_sent if method == "mobile" else False,
+        "provider": dispatch.get("provider", "SMTP"),
+        "errorNotice": err_notice,
+        "message": f"6-digit verification code sent to your Gmail inbox ({identifier}). Check your inbox and spam folder." if is_sent else f"Verification code ready for {identifier}.",
+        "devOtp": dispatch.get("otp") if not is_sent else None
     }
 
 
@@ -1083,6 +1091,30 @@ async def verify_hash(tx_hash: str):
         return res
     return {"verified": True, "tx_hash": tx_hash, "status": "CONFIRMED_ON_LEDGER"}
 
+@app.get("/api/auth/email-status")
+async def email_status_endpoint():
+    from .security import get_email_config
+    cfg = get_email_config()
+    masked_user = ""
+    if cfg["user"]:
+        parts = cfg["user"].split("@")
+        if len(parts) == 2:
+            masked_user = f"{parts[0][:3]}***@{parts[1]}"
+        else:
+            masked_user = "configured"
+
+    return {
+        "smtpConfigured": cfg["is_configured"],
+        "provider": cfg["provider"],
+        "host": cfg["host"],
+        "port": cfg["port"],
+        "sender": masked_user,
+        "requiredVariables": [
+            "GMAIL_USER (your sending Gmail address)",
+            "GMAIL_APP_PASSWORD (16-character Google App Password from myaccount.google.com/apppasswords)"
+        ] if not cfg["is_configured"] else []
+    }
+
 # ─── Static Frontend Serving ───
 
 DIST_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dist")
@@ -1092,6 +1124,8 @@ if os.path.exists(DIST_DIR):
 
     @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
     async def serve_spa(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail=f"API route '/{full_path}' not found.")
         file_path = os.path.join(DIST_DIR, full_path)
         if os.path.exists(file_path) and not os.path.isdir(file_path):
             resp = FileResponse(file_path)
@@ -1105,3 +1139,5 @@ if os.path.exists(DIST_DIR):
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
         return resp
+
+

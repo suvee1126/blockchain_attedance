@@ -7,6 +7,15 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Tuple, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+
+# ─── Load Environment Variables ───
+# Automatically load .env from current working dir, project root, and backend/
+load_dotenv()
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_project_root, ".env"))
+load_dotenv(os.path.join(_project_root, ".env.local"))
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 # ─── Strong Password Rules ───
 PASSWORD_REGEX = re.compile(
@@ -63,17 +72,17 @@ def validate_password_strength(password: str) -> Tuple[bool, str]:
         return False, "Password must contain at least one special character (e.g. @, #, $, !)."
     return True, ""
 
-# ─── Salted PBKDF2 Secure Password Hashing ───
-def hash_password(password: str) -> str:
-    """Hashes a password with a unique cryptographic salt using PBKDF2-HMAC-SHA256."""
+# ─── PBKDF2 Password Hashing & Verification ───
+def hash_password(plain_password: str) -> str:
+    """Hashes a password using PBKDF2-HMAC-SHA256 with 100,000 iterations and a secure salt."""
     salt = secrets.token_hex(16)
     key = hashlib.pbkdf2_hmac(
         'sha256',
-        password.encode('utf-8'),
+        plain_password.encode('utf-8'),
         salt.encode('utf-8'),
         100000
-    ).hex()
-    return f"pbkdf2:sha256:100000${salt}${key}"
+    )
+    return f"pbkdf2:sha256:100000${salt}${key.hex()}"
 
 def verify_password(plain_password: str, stored_hash: str) -> bool:
     """Verifies a plain password against a stored PBKDF2 or SHA-256 hash securely."""
@@ -83,16 +92,16 @@ def verify_password(plain_password: str, stored_hash: str) -> bool:
     if stored_hash.startswith("pbkdf2:sha256:"):
         try:
             parts = stored_hash.split('$')
-            if len(parts) == 3:
-                rounds_spec, salt, expected_key = parts
-                rounds = int(rounds_spec.split(':')[2])
-                actual_key = hashlib.pbkdf2_hmac(
-                    'sha256',
-                    plain_password.encode('utf-8'),
-                    salt.encode('utf-8'),
-                    rounds
-                ).hex()
-                return secrets.compare_digest(actual_key, expected_key)
+            iterations = int(parts[0].split(':')[-1])
+            salt = parts[1]
+            stored_key = parts[2]
+            computed_key = hashlib.pbkdf2_hmac(
+                'sha256',
+                plain_password.encode('utf-8'),
+                salt.encode('utf-8'),
+                iterations
+            ).hex()
+            return secrets.compare_digest(stored_key, computed_key)
         except Exception:
             return False
 
@@ -131,74 +140,182 @@ def generate_secure_otp() -> Tuple[str, str]:
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     return otp, expires_at
 
-# ─── Real Email Dispatch ───
+# ─── Email Configuration Inspector ───
+def get_email_config() -> Dict[str, Any]:
+    """
+    Retrieves and normalizes SMTP/Gmail configuration from environment variables.
+    Supports GMAIL_USER, GMAIL_APP_PASSWORD, SMTP_USER, SMTP_PASSWORD, SMTP_HOST, SMTP_PORT.
+    """
+    user = (
+        os.environ.get("GMAIL_USER") or
+        os.environ.get("SMTP_USER") or
+        os.environ.get("EMAIL_USER") or
+        ""
+    ).strip()
+
+    raw_password = (
+        os.environ.get("GMAIL_APP_PASSWORD") or
+        os.environ.get("SMTP_PASSWORD") or
+        os.environ.get("SMTP_PASS") or
+        os.environ.get("EMAIL_PASS") or
+        ""
+    ).strip()
+
+    # Google App Passwords often have spaces (e.g. 'abcd efgh ijkl mnop')
+    # Stripping spaces prevents SMTPAuthenticationError
+    password = raw_password.replace(" ", "")
+
+    host = (os.environ.get("SMTP_HOST") or "").strip()
+    if not host and (user.endswith("@gmail.com") or os.environ.get("GMAIL_APP_PASSWORD")):
+        host = "smtp.gmail.com"
+
+    port_str = (os.environ.get("SMTP_PORT") or "").strip()
+    port = int(port_str) if port_str.isdigit() else 587
+
+    sender = (os.environ.get("SMTP_FROM") or "").strip()
+    if not sender and user:
+        sender = f"SummitAttend Security <{user}>"
+
+    resend_key = (os.environ.get("RESEND_API_KEY") or "").strip()
+    sendgrid_key = (os.environ.get("SENDGRID_API_KEY") or "").strip()
+
+    is_configured = bool((host and user and password) or resend_key or sendgrid_key)
+    provider_name = "Gmail SMTP (smtp.gmail.com)" if "gmail" in host.lower() else ("Resend API" if resend_key else ("SendGrid" if sendgrid_key else "Custom SMTP"))
+
+    return {
+        "is_configured": is_configured,
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
+        "from": sender,
+        "resend_key": resend_key,
+        "sendgrid_key": sendgrid_key,
+        "provider": provider_name
+    }
+
+# ─── Real Email Dispatch (Gmail SMTP TLS/SSL + Resend + Fallback) ───
 def send_verification_email(to_email: str, otp: str, purpose: str = "Email Verification") -> Dict[str, Any]:
     """
-    Sends a real verification email with OTP over SMTP.
-    Configured via: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM.
-    If SMTP server is not yet configured, provides structured success with development preview.
+    Sends a real verification email with 6-digit OTP to user's Gmail inbox.
+    Uses Gmail SMTP over TLS port 587 (with automatic fallback to SSL port 465).
     """
     to_clean = to_email.strip().lower()
     subject = f"SummitAttend - Your {purpose} Code: {otp}"
+
+    cfg = get_email_config()
+    email_sent = False
+    error_msg = ""
+    provider_used = cfg["provider"]
 
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
       <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        body {{ font-family: 'Helvetica Neue', Arial, sans-serif; background-color: #f8fafc; color: #0f172a; margin: 0; padding: 24px; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #0f172a; margin: 0; padding: 24px; }}
         .card {{ max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; padding: 32px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }}
         .header {{ font-size: 20px; font-weight: 800; color: #1e40af; margin-bottom: 8px; }}
-        .otp-box {{ background: #eff6ff; border: 2px dashed #3b82f6; border-radius: 12px; padding: 18px; text-align: center; margin: 24px 0; }}
-        .otp-code {{ font-size: 32px; font-weight: 900; letter-spacing: 6px; color: #1d4ed8; font-family: monospace; }}
+        .otp-box {{ background: #eff6ff; border: 2px dashed #3b82f6; border-radius: 12px; padding: 20px; text-align: center; margin: 24px 0; }}
+        .otp-code {{ font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #1d4ed8; font-family: monospace; }}
         .footer {{ font-size: 11px; color: #94a3b8; text-align: center; margin-top: 24px; border-top: 1px solid #f1f5f9; padding-top: 16px; }}
       </style>
     </head>
     <body>
       <div class="card">
         <div class="header">🔐 SummitAttend Security</div>
-        <p style="font-size: 14px; color: #475569;">You requested a verification code for <strong>{purpose}</strong> on SummitAttend.</p>
+        <p style="font-size: 14px; color: #475569; line-height: 1.5;">You requested an authentication code for <strong>{purpose}</strong> on the Smart Attendance System.</p>
         <div class="otp-box">
-          <div style="font-size: 11px; text-transform: uppercase; font-weight: 700; color: #64748b; margin-bottom: 6px;">Your 6-Digit One-Time Code</div>
+          <div style="font-size: 11px; text-transform: uppercase; font-weight: 700; color: #64748b; margin-bottom: 8px;">Your 6-Digit Verification Code</div>
           <div class="otp-code">{otp}</div>
         </div>
-        <p style="font-size: 12px; color: #64748b;">This OTP code is valid for <strong>5 minutes</strong>. Do not share this code with anyone.</p>
+        <p style="font-size: 12px; color: #64748b; line-height: 1.5;">This code will expire in <strong>5 minutes</strong>. If you did not request this verification, you can safely ignore this email.</p>
         <div class="footer">
-          SummitAttend Cryptographic Attendance Ledger • Security Authentication Engine
+          SummitAttend Blockchain Attendance System • Cryptographic Authentication Engine
         </div>
       </div>
     </body>
     </html>
     """
 
-    smtp_host = os.environ.get("SMTP_HOST", "")
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USER", "")
-    smtp_pass = os.environ.get("SMTP_PASSWORD", "")
-    smtp_from = os.environ.get("SMTP_FROM", smtp_user or "security@summitattend.edu")
+    text_content = (
+        f"SummitAttend Security Verification\n\n"
+        f"Your 6-digit {purpose} code is: {otp}\n\n"
+        f"This code will expire in 5 minutes.\n"
+        f"Do not share this code with anyone."
+    )
 
-    email_sent = False
-    error_msg = ""
+    if cfg["is_configured"]:
+        # 1. SMTP Delivery (Gmail or custom SMTP)
+        if cfg["host"] and cfg["user"] and cfg["password"]:
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"] = cfg["from"]
+                msg["To"] = to_clean
+                msg.attach(MIMEText(text_content, "plain"))
+                msg.attach(MIMEText(html_content, "html"))
 
-    if smtp_host and smtp_user and smtp_pass:
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject
-            msg["From"] = smtp_from
-            msg["To"] = to_clean
-            msg.attach(MIMEText(html_content, "html"))
+                if cfg["port"] == 465:
+                    with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=12) as server:
+                        server.login(cfg["user"], cfg["password"])
+                        server.sendmail(cfg["user"], [to_clean], msg.as_string())
+                else:
+                    with smtplib.SMTP(cfg["host"], cfg["port"], timeout=12) as server:
+                        server.ehlo()
+                        server.starttls()
+                        server.ehlo()
+                        server.login(cfg["user"], cfg["password"])
+                        server.sendmail(cfg["user"], [to_clean], msg.as_string())
+                email_sent = True
+                print(f"[EMAIL SUCCESS] Dispatched OTP code to Gmail inbox: {to_clean} via {cfg['host']}:{cfg['port']}")
+            except smtplib.SMTPAuthenticationError as auth_err:
+                error_msg = f"Gmail authentication error: Invalid Gmail credentials. If 2-Step Verification is enabled, generate a 16-character Google App Password in your Google Account security settings and set GMAIL_APP_PASSWORD in .env."
+                print(f"[!] {error_msg}")
+            except Exception as e:
+                # If Port 587 failed, attempt Port 465 SSL fallback if host is Gmail
+                if "gmail" in cfg["host"].lower() and cfg["port"] != 465:
+                    try:
+                        print(f"[*] Port 587 connection error ({e}), attempting fallback via Gmail SSL Port 465...")
+                        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=12) as ssl_server:
+                            ssl_server.login(cfg["user"], cfg["password"])
+                            ssl_server.sendmail(cfg["user"], [to_clean], msg.as_string())
+                        email_sent = True
+                        print(f"[EMAIL SUCCESS] Dispatched OTP code to Gmail inbox: {to_clean} via smtp.gmail.com:465 (SSL)")
+                    except Exception as ssl_err:
+                        error_msg = f"SMTP error (587): {str(e)} | SSL fallback (465): {str(ssl_err)}"
+                        print(f"[!] {error_msg}")
+                else:
+                    error_msg = f"SMTP delivery error ({cfg['host']}:{cfg['port']}): {str(e)}"
+                    print(f"[!] {error_msg}")
 
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
-                server.starttls()
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(smtp_from, [to_clean], msg.as_string())
-            email_sent = True
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[!] Warning: SMTP email delivery error: {e}")
+        # 2. Resend API Delivery
+        elif cfg["resend_key"]:
+            import urllib.request
+            import json
+            try:
+                req_data = json.dumps({
+                    "from": cfg["from"] or "SummitAttend <onboarding@resend.dev>",
+                    "to": [to_clean],
+                    "subject": subject,
+                    "html": html_content
+                }).encode('utf-8')
+                req = urllib.request.Request("https://api.resend.com/emails", data=req_data, method="POST")
+                req.add_header("Authorization", f"Bearer {cfg['resend_key']}")
+                req.add_header("Content-Type", "application/json")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status in (200, 201):
+                        email_sent = True
+                        provider_used = "Resend API"
+                        print(f"[EMAIL SUCCESS] Dispatched OTP to {to_clean} via Resend API")
+            except Exception as e:
+                error_msg = f"Resend API error: {str(e)}"
+                print(f"[!] {error_msg}")
 
-    print(f"[EMAIL GATEWAY] Dispatched {purpose} OTP to {to_clean} (Sent: {email_sent})")
+    else:
+        print(f"[!] [EMAIL GATEWAY] Notice: Gmail SMTP credentials not found in environment. Set GMAIL_USER and GMAIL_APP_PASSWORD in .env for real inbox delivery. Generated development OTP: {otp}")
 
     return {
         "success": True,
@@ -207,8 +324,9 @@ def send_verification_email(to_email: str, otp: str, purpose: str = "Email Verif
         "otp": otp,
         "purpose": purpose,
         "expiresInSeconds": 300,
-        "smtpConfigured": bool(smtp_host and smtp_user),
-        "error": error_msg if not email_sent and smtp_host else None
+        "smtpConfigured": cfg["is_configured"],
+        "provider": provider_used,
+        "error": error_msg if not email_sent and cfg["is_configured"] else None
     }
 
 # ─── Real SMS Dispatch (Twilio + Fast2SMS + Fallback) ───
@@ -216,9 +334,9 @@ def send_verification_sms(to_phone: str, otp: str, purpose: str = "Mobile Verifi
     """
     Sends real SMS with 6-digit OTP code.
     Supported SMS Providers via Environment Variables:
-    1. Twilio: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER (or TWILIO_MESSAGING_SERVICE_SID)
+    1. Twilio: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
     2. Fast2SMS: FAST2SMS_API_KEY
-    If no provider API key is configured in .env, provides structured preview for development testing.
+    If no provider API key is configured in .env, provides preview for development.
     """
     is_valid, formatted_phone, err = validate_phone_number(to_phone)
     if not is_valid:
