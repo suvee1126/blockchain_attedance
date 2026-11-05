@@ -3,13 +3,17 @@ from typing import List, Optional, Any, Dict
 
 class LoginRequest(BaseModel):
     role: str
-    email: str
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    emailOrPhone: Optional[str] = ""
     password: Optional[str] = ""
 
 class RegisterRequest(BaseModel):
     role: str
     name: str
-    email: str
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    verificationMethod: Optional[str] = "email"
     password: str
     usn: Optional[str] = None
     sectionId: Optional[str] = None
@@ -136,18 +140,27 @@ class MarksLockRequest(BaseModel):
 
 
 class SendOtpRequest(BaseModel):
-    email: str
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    identifier: Optional[str] = ""
+    method: Optional[str] = "email"
     role: str
     purpose: Optional[str] = "verification"
 
 class VerifyOtpRequest(BaseModel):
-    email: str
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    identifier: Optional[str] = ""
+    method: Optional[str] = "email"
     role: str
     otp: str
     purpose: Optional[str] = "verification"
 
 class ResetPasswordRequest(BaseModel):
-    email: str
+    email: Optional[str] = ""
+    phone: Optional[str] = ""
+    identifier: Optional[str] = ""
+    method: Optional[str] = "email"
     role: str
     otp: str
     newPassword: str

@@ -18,7 +18,8 @@ from .database import (
     get_nc_records, insert_nc_record,
     get_attendance_records, insert_attendance_record,
     get_marks, insert_or_update_mark, delete_mark, set_marks_lock,
-    authenticate_user_credentials, set_user_otp, verify_user_otp, update_user_password, set_user_account_status
+    authenticate_user_credentials, set_user_otp, verify_user_otp, update_user_password, set_user_account_status,
+    save_otp_verification, verify_otp_verification, check_duplicate_account, find_user_by_email_or_phone
 )
 from .firebase_db import (
     get_firebase_status, is_firebase_active,
@@ -27,8 +28,8 @@ from .firebase_db import (
 from .face_engine import extract_face_biometric, compare_faces
 from .blockchain import blockchain, generate_blockchain_hash, haversine_distance
 from .security import (
-    validate_email_format, validate_password_strength, hash_password, verify_password,
-    generate_secure_otp, send_verification_email
+    validate_email_format, validate_phone_number, validate_password_strength, hash_password, verify_password,
+    generate_secure_otp, send_verification_email, send_verification_sms, check_rate_limit
 )
 from .models import (
     LoginRequest, RegisterRequest, SectionCreate, SubjectCreate, TeacherCreate,
@@ -62,80 +63,200 @@ app.add_middleware(
 
 # ─── Auth API ───
 
+@app.post("/api/auth/send-otp")
+async def send_otp_endpoint(req: SendOtpRequest):
+    method = (req.method or "email").strip().lower()
+    role = req.role.strip().lower()
+    purpose = (req.purpose or "verification").strip().lower()
+    identifier = (req.identifier or req.email or req.phone or "").strip()
+
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Mobile number or Email address is required.")
+
+    if method == "mobile":
+        is_valid, formatted_phone, err = validate_phone_number(identifier)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=err)
+        identifier = formatted_phone
+    else:
+        # Email verification
+        identifier = identifier.lower()
+        if not validate_email_format(identifier):
+            raise HTTPException(status_code=400, detail="Please enter a valid email address (e.g. name@gmail.com).")
+
+    # Rate limiting: max 4 requests per 5 minutes
+    is_allowed, cooldown = check_rate_limit(identifier, max_requests=4, window_seconds=300)
+    if not is_allowed:
+        raise HTTPException(status_code=429, detail=f"Too many verification requests. Please wait {cooldown} seconds before trying again.")
+
+    # Purpose check
+    if purpose == "verification":
+        is_dup, dup_err = check_duplicate_account(role, email=identifier if method == "email" else "", phone=identifier if method == "mobile" else "")
+        if is_dup:
+            raise HTTPException(status_code=400, detail=dup_err)
+    elif purpose == "reset":
+        user = find_user_by_email_or_phone(role, identifier)
+        if not user:
+            raise HTTPException(status_code=404, detail=f"No {role} account found matching '{identifier}'.")
+
+    # Generate 6-digit cryptographic OTP (5-minute expiry)
+    otp, expires_at = generate_secure_otp()
+
+    # Save to dedicated verification table
+    save_otp_verification(identifier, method, role, otp, purpose, expires_at)
+
+    # Real dispatch via configured provider
+    if method == "mobile":
+        dispatch = send_verification_sms(identifier, otp, f"Smart Attendance {purpose.capitalize()}")
+    else:
+        dispatch = send_verification_email(identifier, otp, f"Smart Attendance {purpose.capitalize()}")
+
+    return {
+        "success": True,
+        "method": method,
+        "identifier": identifier,
+        "expiresInSeconds": 300,
+        "message": f"6-digit verification code dispatched to {identifier}.",
+        "devOtp": dispatch.get("otp") if not (dispatch.get("emailSent") or dispatch.get("smsSent")) else None
+    }
+
+
+@app.post("/api/auth/verify-otp")
+async def verify_otp_endpoint(req: VerifyOtpRequest):
+    method = (req.method or "email").strip().lower()
+    role = req.role.strip().lower()
+    purpose = (req.purpose or "verification").strip().lower()
+    identifier = (req.identifier or req.email or req.phone or "").strip()
+    otp = (req.otp or "").strip()
+
+    if not identifier or not otp:
+        raise HTTPException(status_code=400, detail="Identifier and 6-digit OTP code are required.")
+
+    if method == "mobile":
+        _, identifier, _ = validate_phone_number(identifier)
+    else:
+        identifier = identifier.lower()
+
+    is_valid, msg = verify_otp_verification(identifier, role, otp, purpose)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=msg)
+
+    return {"success": True, "message": msg, "verified": True}
+
+
+@app.post("/api/auth/forgot-password/request")
+async def forgot_password_request(req: SendOtpRequest):
+    req.purpose = "reset"
+    return await send_otp_endpoint(req)
+
+
+@app.post("/api/auth/forgot-password/reset")
+async def forgot_password_reset(req: ResetPasswordRequest):
+    method = (req.method or "email").strip().lower()
+    role = req.role.strip().lower()
+    identifier = (req.identifier or req.email or req.phone or "").strip()
+    otp = req.otp.strip()
+    new_pwd = req.newPassword.strip()
+    conf_pwd = req.confirmPassword.strip()
+
+    if not identifier or not otp:
+        raise HTTPException(status_code=400, detail="Identifier and OTP code are required.")
+
+    if new_pwd != conf_pwd:
+        raise HTTPException(status_code=400, detail="Passwords do not match.")
+
+    is_valid_pwd, pwd_err = validate_password_strength(new_pwd)
+    if not is_valid_pwd:
+        raise HTTPException(status_code=400, detail=pwd_err)
+
+    if method == "mobile":
+        _, identifier, _ = validate_phone_number(identifier)
+    else:
+        identifier = identifier.lower()
+
+    is_valid, msg = verify_otp_verification(identifier, role, otp, "reset")
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=msg)
+
+    # Hash new password with PBKDF2
+    hashed = hash_password(new_pwd)
+    user = find_user_by_email_or_phone(role, identifier)
+    if not user:
+        raise HTTPException(status_code=404, detail="User account not found.")
+
+    email = user.get("email", identifier)
+    update_user_password(email, role, hashed)
+
+    return {"success": True, "message": "Password reset successfully. You may now sign in with your new password."}
+
+
 @app.post("/api/auth/login")
 async def login(req: LoginRequest):
-    email = req.email.strip().lower()
+    raw_ident = (req.emailOrPhone or req.email or req.phone or "").strip()
     role = req.role.strip().lower()
     password = (req.password or "").strip()
 
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required.")
+    if not raw_ident:
+        raise HTTPException(status_code=400, detail="Email address or Mobile number is required.")
     if not password:
         raise HTTPException(status_code=400, detail="Password is required.")
 
-    if role == "admin":
-        admins = get_admins()
-        admin = next((a for a in admins if a["email"].lower() == email), None)
+    # Find user across database by email or phone (or USN for student)
+    user = find_user_by_email_or_phone(role, raw_ident)
 
-        if admin:
-            if admin["password"] != password:
-                raise HTTPException(status_code=401, detail="Incorrect administrator password.")
+    # Fallback default hardcoded admin if not found in db
+    if not user and role == "admin" and raw_ident.lower() in ["admin@blockchain.edu", "admin@summit.edu", "admin@gmail.com"]:
+        if password == "admin123":
             return {
                 "success": True,
-                "user": {"id": admin["id"], "name": admin["name"], "role": "admin", "email": admin["email"]}
+                "user": {"id": "admin_1", "name": "System Administrator", "role": "admin", "email": raw_ident.lower(), "isActive": True, "isVerified": True}
             }
-        elif email in ["admin@blockchain.edu", "admin@summit.edu", "admin@gmail.com"]:
-            if password == "admin123":
-                return {
-                    "success": True,
-                    "user": {"id": "admin_1", "name": "System Administrator", "role": "admin", "email": email}
-                }
-            raise HTTPException(status_code=401, detail="Incorrect administrator password.")
-        
-        raise HTTPException(status_code=404, detail=f"No administrator found with email '{email}'.")
+        raise HTTPException(status_code=401, detail="Incorrect administrator password.")
 
-    elif role == "teacher":
-        teachers = get_teachers()
-        teacher = next((t for t in teachers if t["email"].lower() == email), None)
-        if not teacher:
-            raise HTTPException(status_code=404, detail=f"No teacher found with email '{email}'. Please check your email or Register.")
-        
-        stored_pwd = (teacher.get("password") or "pass").strip()
-        if stored_pwd != password:
-            raise HTTPException(status_code=401, detail="Incorrect password for this teacher account.")
+    if not user:
+        raise HTTPException(status_code=404, detail=f"No {role} account found matching '{raw_ident}'. Please check your credentials or Register.")
 
-        return {
-            "success": True,
-            "user": {**teacher, "role": "teacher"}
-        }
+    # Check account active status
+    if not bool(user.get("is_active", 1)):
+        raise HTTPException(status_code=403, detail="Your account has been deactivated by the Administrator. Please contact support.")
 
-    elif role == "student":
-        students = get_students()
-        student = next((s for s in students if s["email"].lower() == email or (s.get("usn") and s["usn"].lower() == email)), None)
-        if not student:
-            raise HTTPException(status_code=404, detail=f"No student found with email '{email}'. Please check your email or Register.")
-        
-        stored_pwd = (student.get("password") or "pass").strip()
-        if stored_pwd != password:
-            raise HTTPException(status_code=401, detail="Incorrect password for this student account.")
-        
+    # Verify password securely
+    stored_pwd = user.get("password") or ""
+    if not verify_password(password, stored_pwd):
+        raise HTTPException(status_code=401, detail="Incorrect password. Please try again.")
+
+    # Prepare response payload
+    user_data = dict(user)
+    user_data.pop("password", None)
+    user_data["role"] = role
+    user_data["isActive"] = bool(user.get("is_active", 1))
+    user_data["isVerified"] = bool(user.get("is_verified", 1))
+    user_data["phone"] = user.get("phone", "") or ""
+    user_data["phoneVerified"] = bool(user.get("phone_verified", 0))
+    user_data["emailVerified"] = bool(user.get("email_verified", 1))
+
+    if role == "student":
         # Calculate subjectIds for student based on section
         teachers = get_teachers()
         assigned_subjects = []
         for t in teachers:
-            if student["sectionId"] in t.get("assignedSections", []):
+            if user_data.get("section_id") in t.get("assignedSections", []):
                 assigned_subjects.extend(t.get("assignedSubjects", []))
-        
         if not assigned_subjects:
             subjects = get_subjects()
             assigned_subjects = [sub["id"] for sub in subjects]
-        
-        return {
-            "success": True,
-            "user": {**student, "role": "student", "subjectIds": list(set(assigned_subjects))}
-        }
+        user_data["sectionId"] = user_data.pop("section_id", "")
+        user_data["parentName"] = user_data.pop("parent_name", "") or ""
+        user_data["parentPhone"] = user_data.pop("parent_phone", "") or ""
+        user_data["subjectIds"] = list(set(assigned_subjects))
+    elif role == "teacher":
+        if isinstance(user_data.get("assigned_subjects"), str):
+            import json
+            user_data["assignedSubjects"] = json.loads(user_data.pop("assigned_subjects", "[]"))
+            user_data["assignedSections"] = json.loads(user_data.pop("assigned_sections", "[]"))
 
-    raise HTTPException(status_code=400, detail="Invalid role specified. Must be 'student', 'teacher', or 'admin'.")
+    return {"success": True, "user": user_data}
+
 
 
 
@@ -210,55 +331,72 @@ async def verify_face_login(req: FaceLoginRequest):
 
 @app.post("/api/auth/register")
 async def register(req: RegisterRequest):
-    email = req.email.strip().lower()
+    email = (req.email or "").strip().lower()
+    phone = (req.phone or "").strip()
     role = req.role.strip().lower()
     password = req.password.strip()
     name = req.name.strip()
+    ver_method = (req.verificationMethod or "email").strip().lower()
 
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="A valid email address is required.")
     if not name:
         raise HTTPException(status_code=400, detail="Full Name is required.")
-    if not password or len(password) < 3:
-        raise HTTPException(status_code=400, detail="Password must be at least 3 characters.")
+    
+    if ver_method == "mobile":
+        if not phone:
+            raise HTTPException(status_code=400, detail="Mobile number is required for mobile verification.")
+        is_valid_phone, formatted_phone, phone_err = validate_phone_number(phone)
+        if not is_valid_phone:
+            raise HTTPException(status_code=400, detail=phone_err)
+        phone = formatted_phone
+    else:
+        if not email or "@" not in email:
+            raise HTTPException(status_code=400, detail="A valid email address is required.")
 
-    # Check if email is already in use across roles
-    all_teachers = get_teachers()
+    # Validate strong password
+    is_valid_pwd, pwd_err = validate_password_strength(password)
+    if not is_valid_pwd:
+        raise HTTPException(status_code=400, detail=pwd_err)
+
+    # Check duplicate account across database
+    is_dup, dup_err = check_duplicate_account(role, email=email, phone=phone)
+    if is_dup:
+        raise HTTPException(status_code=400, detail=dup_err)
+
     all_students = get_students()
-    all_admins = get_admins()
-
-    if any(t["email"].lower() == email for t in all_teachers) or \
-       any(s["email"].lower() == email for s in all_students) or \
-       any(a["email"].lower() == email for a in all_admins):
-        raise HTTPException(status_code=400, detail=f"An account with email '{email}' already exists. Please Sign In.")
+    all_teachers = get_teachers()
 
     if role == "student":
         usn = (req.usn or f"USN{int(time.time()) % 100000:05d}").strip().upper()
-        if any(s["usn"].upper() == usn for s in all_students):
+        if any(s.get("usn", "").upper() == usn for s in all_students):
             raise HTTPException(status_code=400, detail=f"A student with USN '{usn}' already exists.")
 
-        # Assign section
         sections = get_sections()
         section_id = req.sectionId or (sections[0]["id"] if sections else "s1")
 
-        # Assign unique numeric student id
-        existing_ids = [s["id"] for s in all_students if isinstance(s["id"], int)]
+        existing_ids = [s["id"] for s in all_students if isinstance(s.get("id"), int)]
         new_student_id = (max(existing_ids) + 1) if existing_ids else 101
 
-        insert_student(new_student_id, name, usn, email, section_id, password, req.parentName or "", req.parentPhone or "")
+        insert_student(
+            new_student_id, name, usn, email, section_id, password,
+            req.parentName or "", req.parentPhone or "",
+            is_verified=1, is_active=1,
+            phone=phone, phone_verified=1 if ver_method == "mobile" else 0,
+            email_verified=1 if ver_method == "email" else 0,
+            verification_method=ver_method
+        )
 
-        # Record to blockchain
         tx_hash = generate_blockchain_hash()
         blockchain.add_transaction({
             "type": "STUDENT_REGISTERED",
             "studentId": new_student_id,
             "usn": usn,
             "email": email,
+            "phone": phone,
+            "verificationMethod": ver_method,
             "sectionId": section_id,
             "tx_hash": tx_hash
         })
 
-        # Calculate subjects
         assigned_subjects = []
         for t in all_teachers:
             if section_id in t.get("assignedSections", []):
@@ -272,12 +410,65 @@ async def register(req: RegisterRequest):
             "name": name,
             "usn": usn,
             "email": email,
+            "phone": phone,
+            "verificationMethod": ver_method,
             "sectionId": section_id,
             "parentName": req.parentName or "",
             "parentPhone": req.parentPhone or "",
             "role": "student",
-            "password": password,
+            "isActive": True,
+            "isVerified": True,
             "subjectIds": list(set(assigned_subjects))
+        }
+        return {"success": True, "user": user_data, "tx_hash": tx_hash}
+
+    elif role == "teacher":
+        t_id = f"t{int(time.time() * 1000)}"
+        department = req.department or "Computer Science"
+        assigned_subjects = req.assignedSubjects or []
+        assigned_sections = req.assignedSections or []
+
+        if not assigned_sections:
+            sections = get_sections()
+            if sections:
+                assigned_sections = [sections[0]["id"]]
+        if not assigned_subjects:
+            subjects = get_subjects()
+            if subjects:
+                assigned_subjects = [subjects[0]["id"]]
+
+        insert_teacher(
+            t_id, name, email, department, assigned_subjects, assigned_sections, password,
+            is_verified=1, is_active=1,
+            phone=phone, phone_verified=1 if ver_method == "mobile" else 0,
+            email_verified=1 if ver_method == "email" else 0,
+            verification_method=ver_method
+        )
+
+        tx_hash = generate_blockchain_hash()
+        blockchain.add_transaction({
+            "type": "TEACHER_REGISTERED",
+            "teacherId": t_id,
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "verificationMethod": ver_method,
+            "department": department,
+            "tx_hash": tx_hash
+        })
+
+        user_data = {
+            "id": t_id,
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "verificationMethod": ver_method,
+            "department": department,
+            "assignedSubjects": assigned_subjects,
+            "assignedSections": assigned_sections,
+            "role": "teacher",
+            "isActive": True,
+            "isVerified": True
         }
         return {"success": True, "user": user_data, "tx_hash": tx_hash}
 

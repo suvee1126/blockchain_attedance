@@ -30,8 +30,11 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
 
   // Register fields
+  const [verificationMethod, setVerificationMethod] = useState('email'); // 'email' | 'mobile'
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
+  const [countryCode, setCountryCode] = useState('+91');
+  const [regPhone, setRegPhone] = useState('');
   const [regPassword, setRegPassword] = useState('');
   const [regConfirmPassword, setRegConfirmPassword] = useState('');
   const [regUsn, setRegUsn] = useState('');
@@ -40,10 +43,12 @@ export default function LoginPage() {
   const [regParentPhone, setRegParentPhone] = useState('');
   const [regDept, setRegDept] = useState('Computer Science');
 
-  // Registration OTP Modal state
+  // Registration OTP Modal state (5-Minute Live Countdown)
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpCode, setOtpCode] = useState('');
-  const [otpSentEmail, setOtpSentEmail] = useState('');
+  const [otpSentIdentifier, setOtpSentIdentifier] = useState('');
+  const [otpSentMethod, setOtpSentMethod] = useState('email');
+  const [otpTimer, setOtpTimer] = useState(300); // 300 seconds (5 minutes)
   const [devOtpHint, setDevOtpHint] = useState('');
 
   // Forgot Password Modal state
@@ -59,6 +64,26 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+
+  // 5-minute (300 seconds) live countdown timer for OTP modal
+  useEffect(() => {
+    let interval = null;
+    if (showOtpModal && otpTimer > 0) {
+      interval = setInterval(() => {
+        setOtpTimer((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [showOtpModal, otpTimer]);
+
+  const formatCountdown = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
 
   const handleRoleChange = (roleId) => {
     setSelectedRole(roleId);
@@ -99,10 +124,23 @@ export default function LoginPage() {
     const cleanName = regName.trim();
     const cleanEmail = regEmail.trim().toLowerCase();
     const cleanPwd = regPassword.trim();
+    const cleanPhone = regPhone.trim() ? `${countryCode}${regPhone.trim()}` : '';
 
-    if (!cleanName || !cleanEmail || !cleanPwd) {
-      setError('Please fill in all required registration fields.');
+    if (!cleanName || !cleanPwd) {
+      setError('Please fill in your full name and create a password.');
       return;
+    }
+
+    if (verificationMethod === 'email') {
+      if (!cleanEmail || !cleanEmail.includes('@')) {
+        setError('Please enter a valid email address (e.g. name@gmail.com).');
+        return;
+      }
+    } else {
+      if (!regPhone.trim() || regPhone.trim().length < 7) {
+        setError('Please enter a valid mobile number with country code for SMS verification.');
+        return;
+      }
     }
 
     // Strong password validation
@@ -121,14 +159,32 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      // 1. Send OTP verification code to real email
-      const otpRes = await sendOtp(cleanEmail, selectedRole, 'verification');
-      setOtpSentEmail(cleanEmail);
+      const targetIdentifier = verificationMethod === 'email' ? cleanEmail : cleanPhone;
+      const otpRes = await sendOtp(targetIdentifier, selectedRole, 'verification', verificationMethod);
+      setOtpSentIdentifier(targetIdentifier);
+      setOtpSentMethod(verificationMethod);
+      setOtpTimer(300); // 5 minutes expiration
       if (otpRes?.devOtp) setDevOtpHint(otpRes.devOtp);
       setShowOtpModal(true);
-      setSuccessMsg(`Verification code dispatched to ${cleanEmail}. Enter code to activate.`);
+      setSuccessMsg(`Verification code dispatched to ${targetIdentifier}. Valid for 5 minutes.`);
     } catch (err) {
-      setError(err.message || 'Failed to dispatch email verification code. Please check your email address.');
+      setError(err.message || 'Failed to dispatch verification code. Please check your details.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResendRegistrationOtp = async () => {
+    if (isLoading) return;
+    setError('');
+    setIsLoading(true);
+    try {
+      const otpRes = await sendOtp(otpSentIdentifier, selectedRole, 'verification', otpSentMethod);
+      setOtpTimer(300);
+      if (otpRes?.devOtp) setDevOtpHint(otpRes.devOtp);
+      setSuccessMsg(`New 6-digit code dispatched to ${otpSentIdentifier}!`);
+    } catch (err) {
+      setError(err.message || 'Failed to resend code. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -142,10 +198,17 @@ export default function LoginPage() {
       setError('Please enter the 6-digit verification code.');
       return;
     }
+    if (otpTimer === 0) {
+      setError('Verification code has expired. Please tap "Resend Code" to get a fresh code.');
+      return;
+    }
 
     setIsLoading(true);
     try {
-      await verifyOtp(otpSentEmail, selectedRole, otpCode.trim(), 'verification');
+      await verifyOtp(otpSentIdentifier, selectedRole, otpCode.trim(), 'verification', otpSentMethod);
+
+      const finalEmail = otpSentMethod === 'email' ? otpSentIdentifier : regEmail.trim().toLowerCase();
+      const finalPhone = otpSentMethod === 'mobile' ? otpSentIdentifier : (regPhone.trim() ? `${countryCode}${regPhone.trim()}` : '');
 
       if (selectedRole === 'student') {
         const cleanUsn = regUsn.trim();
@@ -153,7 +216,9 @@ export default function LoginPage() {
 
         await register('student', {
           name: regName.trim(),
-          email: otpSentEmail,
+          email: finalEmail,
+          phone: finalPhone,
+          verificationMethod: otpSentMethod,
           password: regPassword.trim(),
           usn: cleanUsn,
           sectionId: sectionId,
@@ -163,16 +228,18 @@ export default function LoginPage() {
       } else if (selectedRole === 'teacher') {
         await register('teacher', {
           name: regName.trim(),
-          email: otpSentEmail,
+          email: finalEmail,
+          phone: finalPhone,
+          verificationMethod: otpSentMethod,
           password: regPassword.trim(),
           department: regDept.trim() || 'Computer Science',
         });
       }
 
       setShowOtpModal(false);
-      setSuccessMsg('Email verified and account activated successfully! You may now sign in.');
+      setSuccessMsg(`${otpSentMethod === 'email' ? 'Email' : 'Mobile number'} verified and account activated successfully! You may now sign in.`);
       setAuthMode('login');
-      setEmail(otpSentEmail);
+      setEmail(otpSentIdentifier);
       setPassword(regPassword.trim());
       setOtpCode('');
     } catch (err) {
@@ -606,7 +673,7 @@ export default function LoginPage() {
                 disabled={isLoading}
                 className="w-full flex items-center justify-center gap-2 rounded-xl py-3 text-xs sm:text-sm font-extrabold text-white bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 transition-all shadow-md min-h-[46px] cursor-pointer"
               >
-                {isLoading ? 'Sending Verification Code…' : 'Verify Email & Create Account'}
+                {isLoading ? 'Sending Verification Code…' : `Verify with ${verificationMethod === 'email' ? 'Email' : 'Mobile OTP'} & Create Account`}
               </button>
             </form>
           )}
@@ -618,7 +685,7 @@ export default function LoginPage() {
         </p>
       </div>
 
-      {/* ── Modal: Email Verification OTP Code ── */}
+      {/* ── Modal: Email & Mobile Verification OTP Code (5-Minute Expiry) ── */}
       {showOtpModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-md animate-fadeIn">
           <div className="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl border border-slate-100 text-center relative">
@@ -629,11 +696,21 @@ export default function LoginPage() {
               ✕
             </button>
 
-            <span className="text-3xl block mb-2">✉️</span>
-            <h3 className="font-extrabold text-slate-900 text-base">Verify Email Address</h3>
+            <span className="text-3xl block mb-2">{otpSentMethod === 'email' ? '✉️' : '📱'}</span>
+            <h3 className="font-extrabold text-slate-900 text-base">
+              {otpSentMethod === 'email' ? 'Verify Email Address' : 'Verify Mobile Number'}
+            </h3>
             <p className="text-xs text-slate-500 mt-1">
-              We sent a 6-digit confirmation code to <span className="font-bold text-slate-800">{otpSentEmail}</span>.
+              We sent a 6-digit security code to <span className="font-bold text-slate-800 break-all">{otpSentIdentifier}</span>.
             </p>
+
+            {/* 5-Minute Live Countdown Timer */}
+            <div className="mt-3 flex items-center justify-center gap-2">
+              <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold ${otpTimer > 30 ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-rose-50 text-rose-700 border border-rose-200 animate-pulse'}`}>
+                <span>⏱️</span>
+                <span>{otpTimer > 0 ? `Expires in ${formatCountdown(otpTimer)}` : 'Code Expired'}</span>
+              </span>
+            </div>
 
             {devOtpHint && (
               <div className="my-3 p-2.5 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 font-bold">
@@ -649,18 +726,31 @@ export default function LoginPage() {
                 value={otpCode}
                 onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
                 required
-                className="w-full text-center tracking-widest font-mono text-xl font-bold py-2.5 border-2 border-slate-300 rounded-xl focus:border-blue-600 focus:outline-none min-h-[46px]"
+                disabled={otpTimer === 0}
+                className="w-full text-center tracking-widest font-mono text-xl font-bold py-2.5 border-2 border-slate-300 rounded-xl focus:border-blue-600 focus:outline-none min-h-[46px] disabled:bg-slate-100 disabled:opacity-50"
               />
 
               {error && <p className="text-xs text-rose-600 font-bold">{error}</p>}
 
               <button
                 type="submit"
-                disabled={isLoading || otpCode.length < 6}
+                disabled={isLoading || otpCode.length < 6 || otpTimer === 0}
                 className="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md transition-all cursor-pointer disabled:opacity-50 min-h-[44px]"
               >
                 {isLoading ? 'Verifying Code…' : 'Confirm & Activate Account'}
               </button>
+
+              <div className="pt-2 flex items-center justify-between text-xs border-t border-slate-100 mt-3">
+                <span className="text-slate-400">Didn't receive the code?</span>
+                <button
+                  type="button"
+                  onClick={handleResendRegistrationOtp}
+                  disabled={isLoading || (otpTimer > 270)}
+                  className="font-bold text-blue-600 hover:text-blue-800 disabled:text-slate-300 cursor-pointer disabled:cursor-not-allowed hover:underline"
+                >
+                  Resend Code
+                </button>
+              </div>
             </form>
           </div>
         </div>

@@ -553,15 +553,21 @@ export function AppProvider({ children }) {
   }, [activeSessions.length, totalTx, students.length, teachers.length, ncRecords]);
 
   // ─── Auth ───
-  const login = useCallback(async (role, email, password) => {
-    const searchEmail = email.toLowerCase().trim();
+  const login = useCallback(async (role, emailOrPhone, password) => {
+    const rawIdent = (emailOrPhone || '').trim();
     const pwd = (password || '').trim();
 
-    // 1. Attempt backend database authentication first
+    // 1. Attempt backend database authentication first (supports Email or Mobile Number)
     const resp = await safeFetchJson(`${API_BASE}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role, email: searchEmail, password: pwd })
+      body: JSON.stringify({
+        role,
+        emailOrPhone: rawIdent,
+        email: rawIdent.includes('@') ? rawIdent.toLowerCase() : '',
+        phone: !rawIdent.includes('@') ? rawIdent : '',
+        password: pwd
+      })
     });
 
     if (resp.ok && resp.isJson && resp.data?.success && resp.data?.user) {
@@ -574,9 +580,20 @@ export function AppProvider({ children }) {
     }
 
     // 2. Cross-device Cloud / local fallback
+    const searchLower = rawIdent.toLowerCase();
+    const searchDigits = rawIdent.replace(/[^0-9]/g, '');
+    const searchLast10 = searchDigits.length >= 10 ? searchDigits.slice(-10) : '';
+
     if (role === 'student') {
-      const student = students.find(s => s.email.toLowerCase() === searchEmail || (s.usn && s.usn.toLowerCase() === searchEmail));
-      if (!student) throw new Error(`No student found with email or USN '${email}'. Please contact Administrator or Register.`);
+      const student = students.find(s => {
+        const sEmail = (s.email || '').toLowerCase();
+        const sUsn = (s.usn || '').toLowerCase();
+        const sPhoneDigits = (s.phone || '').replace(/[^0-9]/g, '');
+        const sPhoneLast10 = sPhoneDigits.length >= 10 ? sPhoneDigits.slice(-10) : '';
+        return sEmail === searchLower || sUsn === searchLower || (searchLast10 && sPhoneLast10 === searchLast10);
+      });
+      if (!student) throw new Error(`No student found with email, USN, or mobile '${rawIdent}'. Please contact Administrator or Register.`);
+      if (student.isActive === false) throw new Error("Your account has been deactivated by the Administrator.");
       if (student.password && student.password !== pwd) {
         throw new Error("Incorrect password for this student account.");
       }
@@ -597,8 +614,14 @@ export function AppProvider({ children }) {
     }
 
     if (role === 'teacher') {
-      const teacher = teachers.find(t => t.email.toLowerCase() === searchEmail);
-      if (!teacher) throw new Error(`No teacher found with email '${email}'.`);
+      const teacher = teachers.find(t => {
+        const tEmail = (t.email || '').toLowerCase();
+        const tPhoneDigits = (t.phone || '').replace(/[^0-9]/g, '');
+        const tPhoneLast10 = tPhoneDigits.length >= 10 ? tPhoneDigits.slice(-10) : '';
+        return tEmail === searchLower || (searchLast10 && tPhoneLast10 === searchLast10);
+      });
+      if (!teacher) throw new Error(`No teacher found with email or mobile '${rawIdent}'.`);
+      if (teacher.isActive === false) throw new Error("Your account has been deactivated by the Administrator.");
       if (teacher.password && teacher.password !== pwd) {
         throw new Error("Incorrect password for this teacher account.");
       }
@@ -608,8 +631,8 @@ export function AppProvider({ children }) {
     }
 
     if (role === 'admin') {
-      if (['admin@summit.edu', 'admin@gmail.com', 'admin@blockchain.edu'].includes(searchEmail) && pwd === 'admin123') {
-        const user = { id: 'admin_1', name: 'System Administrator', role: 'admin', email: searchEmail };
+      if (['admin@summit.edu', 'admin@gmail.com', 'admin@blockchain.edu'].includes(searchLower) && pwd === 'admin123') {
+        const user = { id: 'admin_1', name: 'System Administrator', role: 'admin', email: searchLower };
         setCurrentUser(user);
         return user;
       }
@@ -1328,14 +1351,24 @@ export function AppProvider({ children }) {
   }, []);
 
 
-  // ─── Real Email Verification & Password Security Functions ───
+  // ─── Real Email & Mobile OTP Verification & Password Security Functions ───
 
-  const sendOtp = useCallback(async (email, role, purpose = "verification") => {
+  const sendOtp = useCallback(async (identifier, role, purpose = "verification", method = "email") => {
+    const cleanId = (identifier || '').trim();
+    const payload = {
+      identifier: cleanId,
+      method,
+      role,
+      purpose,
+      email: method === 'email' ? cleanId.toLowerCase() : '',
+      phone: method === 'mobile' ? cleanId : ''
+    };
+
     // 1. Try local backend
     const resp = await safeFetchJson(`${API_BASE}/api/auth/send-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, role, purpose })
+      body: JSON.stringify(payload)
     });
     if (resp.ok && resp.isJson && resp.data) {
       return resp.data;
@@ -1344,13 +1377,14 @@ export function AppProvider({ children }) {
       throw new Error(resp.data.detail);
     }
 
-    // 2. Cloud Firestore fallback
+    // 2. Cloud Firestore fallback (5 minutes expiry)
     const otp = String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    const cleanEmail = email.trim().toLowerCase();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const docKey = `${cleanId.replace(/[^a-zA-Z0-9_+@-]/g, '_')}_${purpose}`;
 
-    await syncDocToFirestore('email_verifications', cleanEmail, {
-      email: cleanEmail,
+    await syncDocToFirestore('otp_verifications', docKey, {
+      identifier: cleanId,
+      method,
       role,
       otp,
       expiresAt,
@@ -1360,18 +1394,33 @@ export function AppProvider({ children }) {
 
     return {
       success: true,
-      message: `Verification code sent to ${email}.`,
+      method,
+      identifier: cleanId,
+      message: `Verification code sent to ${cleanId}.`,
       emailSent: false,
-      devOtp: otp
+      smsSent: false,
+      devOtp: otp,
+      expiresInSeconds: 300
     };
   }, []);
 
-  const verifyOtp = useCallback(async (email, role, otp, purpose = "verification") => {
+  const verifyOtp = useCallback(async (identifier, role, otp, purpose = "verification", method = "email") => {
+    const cleanId = (identifier || '').trim();
+    const payload = {
+      identifier: cleanId,
+      method,
+      role,
+      otp: (otp || '').trim(),
+      purpose,
+      email: method === 'email' ? cleanId.toLowerCase() : '',
+      phone: method === 'mobile' ? cleanId : ''
+    };
+
     // 1. Try local backend
     const resp = await safeFetchJson(`${API_BASE}/api/auth/verify-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, role, otp, purpose })
+      body: JSON.stringify(payload)
     });
     if (resp.ok && resp.isJson && resp.data) {
       return resp.data;
@@ -1381,22 +1430,22 @@ export function AppProvider({ children }) {
     }
 
     // 2. Cloud Firestore fallback
-    const cleanEmail = email.trim().toLowerCase();
     try {
-      const fsRes = await fetch(`${FIRESTORE_BASE}/email_verifications/${encodeURIComponent(cleanEmail)}`);
+      const docKey = `${cleanId.replace(/[^a-zA-Z0-9_+@-]/g, '_')}_${purpose}`;
+      const fsRes = await fetch(`${FIRESTORE_BASE}/otp_verifications/${encodeURIComponent(docKey)}`);
       if (fsRes.ok) {
         const fsDoc = await fsRes.json();
         const parsed = parseFirestoreDoc(fsDoc);
-        if (parsed && parsed.otp === otp.trim()) {
+        if (parsed && parsed.otp === (otp || '').trim()) {
           if (new Date(parsed.expiresAt) > new Date()) {
-            await syncDocToFirestore('email_verifications', cleanEmail, { verified: true });
-            return { success: true };
+            await syncDocToFirestore('otp_verifications', docKey, { verified: true });
+            return { success: true, verified: true };
           }
         }
       }
     } catch {}
 
-    throw new Error("Invalid or expired verification code.");
+    throw new Error("Invalid or expired verification code (5-minute expiration).");
   }, []);
 
   const forgotPasswordRequest = useCallback(async (email, role) => {

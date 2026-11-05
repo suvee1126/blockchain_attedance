@@ -1,8 +1,10 @@
+import re
+from datetime import datetime, timezone
 from .security import hash_password, verify_password, validate_password_strength, generate_secure_otp, send_verification_email
 import sqlite3
 import json
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from .firebase_db import (
     sync_doc_to_firebase, delete_doc_from_firebase,
     is_firebase_active, clear_all_firebase_data
@@ -92,6 +94,14 @@ def init_db():
             cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN reset_otp TEXT DEFAULT ''")
         if 'reset_otp_expires_at' not in cols:
             cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN reset_otp_expires_at TEXT DEFAULT ''")
+        if 'phone' not in cols:
+            cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN phone TEXT DEFAULT ''")
+        if 'phone_verified' not in cols:
+            cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN phone_verified INTEGER DEFAULT 0")
+        if 'email_verified' not in cols:
+            cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN email_verified INTEGER DEFAULT 1")
+        if 'verification_method' not in cols:
+            cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN verification_method TEXT DEFAULT 'email'")
 
     # Hash any existing plaintext passwords in database
     for tbl in ['admins', 'teachers', 'students']:
@@ -116,6 +126,22 @@ def init_db():
         cursor.execute("ALTER TABLE students ADD COLUMN face_image TEXT DEFAULT ''")
     if "face_enrolled_at" not in existing_cols:
         cursor.execute("ALTER TABLE students ADD COLUMN face_enrolled_at TEXT DEFAULT ''")
+
+    # Dedicated OTP Verifications table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS otp_verifications (
+        identifier TEXT NOT NULL,
+        method TEXT NOT NULL,
+        role TEXT NOT NULL,
+        otp TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        attempts INTEGER DEFAULT 0,
+        verified INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(identifier, purpose)
+    );
+    """)
 
     # Active Sessions table
     cursor.execute("""
@@ -283,13 +309,17 @@ def clear_database() -> Dict[str, Any]:
 
 def get_admins() -> List[Dict[str, Any]]:
     conn = get_db_connection()
-    rows = conn.execute("SELECT id, name, email, is_verified, is_active FROM admins").fetchall()
+    rows = conn.execute("SELECT id, name, email, is_verified, is_active, phone, phone_verified, email_verified, verification_method FROM admins").fetchall()
     conn.close()
     result = []
     for r in rows:
         d = dict(r)
         d['isVerified'] = bool(d.get('is_verified', 1))
         d['isActive'] = bool(d.get('is_active', 1))
+        d['phone'] = d.get('phone', '') or ''
+        d['phoneVerified'] = bool(d.get('phone_verified', 0))
+        d['emailVerified'] = bool(d.get('email_verified', 1))
+        d['verificationMethod'] = d.get('verification_method', 'email') or 'email'
         result.append(d)
     return result
 
@@ -348,7 +378,7 @@ def delete_subject(sub_id: str):
 
 def get_teachers() -> List[Dict[str, Any]]:
     conn = get_db_connection()
-    rows = conn.execute("SELECT id, name, email, department, assigned_subjects, assigned_sections, is_verified, is_active FROM teachers").fetchall()
+    rows = conn.execute("SELECT id, name, email, department, assigned_subjects, assigned_sections, is_verified, is_active, phone, phone_verified, email_verified, verification_method FROM teachers").fetchall()
     conn.close()
     result = []
     for r in rows:
@@ -357,25 +387,31 @@ def get_teachers() -> List[Dict[str, Any]]:
         d['assignedSections'] = json.loads(d.pop('assigned_sections') or '[]')
         d['isVerified'] = bool(d.get('is_verified', 1))
         d['isActive'] = bool(d.get('is_active', 1))
+        d['phone'] = d.get('phone', '') or ''
+        d['phoneVerified'] = bool(d.get('phone_verified', 0))
+        d['emailVerified'] = bool(d.get('email_verified', 1))
+        d['verificationMethod'] = d.get('verification_method', 'email') or 'email'
         # Sensitive credentials stripped
         d.pop('password', None)
         result.append(d)
     return result
 
-def insert_teacher(t_id: str, name: str, email: str, department: str, assigned_subjects: list, assigned_sections: list, password: str = "Pass@1234", is_verified: int = 1, is_active: int = 1):
-    email_clean = email.strip().lower()
+def insert_teacher(t_id: str, name: str, email: str, department: str, assigned_subjects: list, assigned_sections: list, password: str = "Pass@1234", is_verified: int = 1, is_active: int = 1, phone: str = "", phone_verified: int = 0, email_verified: int = 1, verification_method: str = "email"):
+    email_clean = (email or "").strip().lower()
+    phone_clean = (phone or "").strip()
     hashed_pwd = hash_password(password.strip()) if password and not password.startswith("pbkdf2:sha256:") else (password or hash_password("Pass@1234"))
     conn = get_db_connection()
     conn.execute(
-        "INSERT OR REPLACE INTO teachers (id, name, email, department, assigned_subjects, assigned_sections, password, is_verified, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (t_id, name.strip(), email_clean, department, json.dumps(assigned_subjects), json.dumps(assigned_sections), hashed_pwd, is_verified, is_active)
+        "INSERT OR REPLACE INTO teachers (id, name, email, department, assigned_subjects, assigned_sections, password, is_verified, is_active, phone, phone_verified, email_verified, verification_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (t_id, name.strip(), email_clean, department, json.dumps(assigned_subjects), json.dumps(assigned_sections), hashed_pwd, is_verified, is_active, phone_clean, phone_verified, email_verified, verification_method)
     )
     conn.commit()
     conn.close()
     sync_doc_to_firebase("teachers", t_id, {
         "id": t_id, "name": name.strip(), "email": email_clean, "department": department,
         "assignedSubjects": assigned_subjects, "assignedSections": assigned_sections,
-        "isVerified": bool(is_verified), "isActive": bool(is_active)
+        "isVerified": bool(is_verified), "isActive": bool(is_active),
+        "phone": phone_clean, "phoneVerified": bool(phone_verified), "emailVerified": bool(email_verified), "verificationMethod": verification_method
     })
 
 def update_teacher_assignments(t_id: str, assigned_subjects: list, assigned_sections: list):
@@ -399,7 +435,7 @@ def delete_teacher(t_id: str):
 
 def get_students() -> List[Dict[str, Any]]:
     conn = get_db_connection()
-    rows = conn.execute("SELECT id, name, usn, email, section_id, parent_name, parent_phone, face_registered, face_descriptor, face_image, face_enrolled_at, is_verified, is_active FROM students").fetchall()
+    rows = conn.execute("SELECT id, name, usn, email, section_id, parent_name, parent_phone, face_registered, face_descriptor, face_image, face_enrolled_at, is_verified, is_active, phone, phone_verified, email_verified, verification_method FROM students").fetchall()
     conn.close()
     result = []
     for r in rows:
@@ -413,6 +449,10 @@ def get_students() -> List[Dict[str, Any]]:
         d['faceEnrolledAt'] = d.pop('face_enrolled_at', '') or ''
         d['isVerified'] = bool(d.get('is_verified', 1))
         d['isActive'] = bool(d.get('is_active', 1))
+        d['phone'] = d.get('phone', '') or ''
+        d['phoneVerified'] = bool(d.get('phone_verified', 0))
+        d['emailVerified'] = bool(d.get('email_verified', 1))
+        d['verificationMethod'] = d.get('verification_method', 'email') or 'email'
         # Sensitive credentials stripped
         d.pop('password', None)
         result.append(d)
@@ -448,23 +488,27 @@ def remove_student_face(student_id: int):
         "faceEnrolledAt": ""
     })
 
-def insert_student(s_id: int, name: str, usn: str, email: str, section_id: str, password: str = "pass", parent_name: str = "", parent_phone: str = ""):
-    email_clean = email.strip().lower()
+def insert_student(s_id: int, name: str, usn: str, email: str, section_id: str, password: str = "pass", parent_name: str = "", parent_phone: str = "", is_verified: int = 1, is_active: int = 1, phone: str = "", phone_verified: int = 0, email_verified: int = 1, verification_method: str = "email"):
+    email_clean = (email or "").strip().lower()
+    phone_clean = (phone or "").strip()
     usn_clean = usn.strip().upper()
     pwd_clean = password.strip() if password else "pass"
+    hashed_pwd = hash_password(pwd_clean) if not pwd_clean.startswith("pbkdf2:sha256:") else pwd_clean
     p_name_clean = (parent_name or "").strip()
     p_phone_clean = (parent_phone or "").strip()
     conn = get_db_connection()
     conn.execute(
-        "INSERT OR REPLACE INTO students (id, name, usn, email, section_id, password, parent_name, parent_phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (s_id, name.strip(), usn_clean, email_clean, section_id, pwd_clean, p_name_clean, p_phone_clean)
+        "INSERT OR REPLACE INTO students (id, name, usn, email, section_id, password, parent_name, parent_phone, is_verified, is_active, phone, phone_verified, email_verified, verification_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (s_id, name.strip(), usn_clean, email_clean, section_id, hashed_pwd, p_name_clean, p_phone_clean, is_verified, is_active, phone_clean, phone_verified, email_verified, verification_method)
     )
     conn.commit()
     conn.close()
     sync_doc_to_firebase("students", str(s_id), {
         "id": s_id, "name": name.strip(), "usn": usn_clean, "email": email_clean,
-        "sectionId": section_id, "password": pwd_clean,
-        "parentName": p_name_clean, "parentPhone": p_phone_clean
+        "sectionId": section_id, "password": hashed_pwd,
+        "parentName": p_name_clean, "parentPhone": p_phone_clean,
+        "isVerified": bool(is_verified), "isActive": bool(is_active),
+        "phone": phone_clean, "phoneVerified": bool(phone_verified), "emailVerified": bool(email_verified), "verificationMethod": verification_method
     })
 
 def update_student(s_id: int, name: str, usn: str, email: str, section_id: str, parent_name: str = "", parent_phone: str = "", password: str = None):
@@ -822,3 +866,118 @@ def set_user_account_status(role: str, user_id: Any, is_active: bool):
     conn.close()
 
     sync_doc_to_firebase(table, str(user_id), {"isActive": is_active})
+
+
+# ─── Dual Identifier & OTP Verification Helpers ───
+
+def save_otp_verification(identifier: str, method: str, role: str, otp: str, purpose: str, expires_at: str):
+    clean_id = identifier.strip().lower()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT OR REPLACE INTO otp_verifications (identifier, method, role, otp, purpose, expires_at, attempts, verified, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)",
+        (clean_id, method, role, otp.strip(), purpose, expires_at, now_iso)
+    )
+    conn.commit()
+    conn.close()
+    sync_doc_to_firebase("otp_verifications", f"{clean_id}_{purpose}", {
+        "identifier": clean_id, "method": method, "role": role, "otp": otp.strip(),
+        "purpose": purpose, "expiresAt": expires_at, "verified": False
+    })
+
+def verify_otp_verification(identifier: str, role: str, otp: str, purpose: str = "verification") -> Tuple[bool, str]:
+    clean_id = identifier.strip().lower()
+    clean_otp = otp.strip()
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT otp, expires_at, attempts, verified FROM otp_verifications WHERE identifier = ? AND purpose = ?",
+        (clean_id, purpose)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        # Fallback to user table
+        if verify_user_otp(clean_id, role, clean_otp, purpose):
+            return True, "Verified successfully."
+        return False, "No active verification code found for this account. Please request a new code."
+
+    stored_otp, expires_at, attempts, is_verified = row[0], row[1], row[2], row[3]
+
+    if attempts >= 5:
+        conn.close()
+        return False, "Too many incorrect attempts. Please request a new verification code."
+
+    # Check expiry
+    try:
+        exp_dt = datetime.fromisoformat(expires_at)
+        if datetime.now(timezone.utc) > exp_dt:
+            conn.close()
+            return False, "Verification code has expired (5-minute limit). Please request a new code."
+    except Exception:
+        pass
+
+    # Check code match
+    if stored_otp != clean_otp:
+        conn.execute("UPDATE otp_verifications SET attempts = attempts + 1 WHERE identifier = ? AND purpose = ?", (clean_id, purpose))
+        conn.commit()
+        conn.close()
+        return False, "Incorrect verification code. Please check and try again."
+
+    # Successful match
+    conn.execute("UPDATE otp_verifications SET verified = 1 WHERE identifier = ? AND purpose = ?", (clean_id, purpose))
+    conn.commit()
+    conn.close()
+
+    sync_doc_to_firebase("otp_verifications", f"{clean_id}_{purpose}", {"verified": True})
+    return True, "Verification successful."
+
+def check_duplicate_account(role: str, email: str = "", phone: str = "") -> Tuple[bool, str]:
+    clean_email = (email or "").strip().lower()
+    clean_phone = re.sub(r'[^0-9]', '', phone or "")
+    if clean_phone and len(clean_phone) >= 10:
+        clean_phone = clean_phone[-10:]
+
+    conn = get_db_connection()
+    for tbl in ['admins', 'teachers', 'students']:
+        if clean_email:
+            r = conn.execute(f"SELECT id FROM {tbl} WHERE LOWER(email) = ?", (clean_email,)).fetchone()
+            if r:
+                conn.close()
+                return True, f"An account with email '{clean_email}' already exists. Please Sign In."
+        if clean_phone:
+            r = conn.execute(f"SELECT id, phone FROM {tbl} WHERE phone IS NOT NULL AND phone != ''").fetchall()
+            for row in r:
+                stored_digits = re.sub(r'[^0-9]', '', row[1] or "")
+                if stored_digits and stored_digits[-10:] == clean_phone:
+                    conn.close()
+                    return True, f"An account with mobile number '{phone}' already exists. Please Sign In."
+    conn.close()
+    return False, ""
+
+def find_user_by_email_or_phone(role: str, identifier: str) -> Optional[Dict[str, Any]]:
+    clean_id = (identifier or "").strip().lower()
+    digits = re.sub(r'[^0-9]', '', clean_id)
+    digits_10 = digits[-10:] if len(digits) >= 10 else ""
+
+    table = "students" if role == "student" else "teachers" if role == "teacher" else "admins"
+    conn = get_db_connection()
+    rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+    conn.close()
+
+    for r in rows:
+        d = dict(r)
+        u_email = (d.get('email') or '').lower().strip()
+        u_phone = (d.get('phone') or '').strip()
+        u_phone_digits = re.sub(r'[^0-9]', '', u_phone)
+        u_phone_10 = u_phone_digits[-10:] if len(u_phone_digits) >= 10 else ""
+
+        if u_email == clean_id:
+            return d
+        if digits_10 and u_phone_10 and digits_10 == u_phone_10:
+            return d
+        # For students, allow USN match
+        if role == "student":
+            u_usn = (d.get('usn') or '').lower().strip()
+            if u_usn == clean_id:
+                return d
+    return None

@@ -1859,6 +1859,10 @@ export default function AdminDashboard() {
               id: t.id,
               name: t.name,
               email: t.email,
+              phone: t.phone || '',
+              phoneVerified: Boolean(t.phoneVerified ?? t.phone_verified),
+              emailVerified: Boolean(t.emailVerified ?? t.email_verified ?? true),
+              verificationMethod: t.verificationMethod || t.verification_method || 'email',
               role: 'teacher',
               roleLabel: 'Faculty',
               roleBadge: 'bg-indigo-50 text-indigo-700 border-indigo-200',
@@ -1870,6 +1874,10 @@ export default function AdminDashboard() {
               id: s.id,
               name: s.name,
               email: s.email,
+              phone: s.phone || '',
+              phoneVerified: Boolean(s.phoneVerified ?? s.phone_verified),
+              emailVerified: Boolean(s.emailVerified ?? s.email_verified ?? true),
+              verificationMethod: s.verificationMethod || s.verification_method || 'email',
               role: 'student',
               roleLabel: 'Student',
               roleBadge: 'bg-blue-50 text-blue-700 border-blue-200',
@@ -1880,7 +1888,11 @@ export default function AdminDashboard() {
             {
               id: 'admin_root',
               name: 'System Administrator',
-              email: 'admin@college.edu',
+              email: 'admin@blockchain.edu',
+              phone: '+91 9999999999',
+              phoneVerified: true,
+              emailVerified: true,
+              verificationMethod: 'email',
               role: 'admin',
               roleLabel: 'Administrator',
               roleBadge: 'bg-purple-50 text-purple-700 border-purple-200',
@@ -1898,7 +1910,7 @@ export default function AdminDashboard() {
             if (userStatusFilter === 'pending' && u.isVerified) return false;
             if (userSearchQuery) {
               const q = userSearchQuery.toLowerCase();
-              return (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q);
+              return (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q) || (u.phone || '').includes(q);
             }
             return true;
           });
@@ -1975,8 +1987,9 @@ export default function AdminDashboard() {
                       <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-500 uppercase tracking-wider">
                         <th className="py-3 px-6">User / Identity</th>
                         <th className="py-3 px-6">Email Address</th>
+                        <th className="py-3 px-6">Mobile Number</th>
                         <th className="py-3 px-6 text-center">Role</th>
-                        <th className="py-3 px-6 text-center">Email Verification</th>
+                        <th className="py-3 px-6 text-center">Verification Status</th>
                         <th className="py-3 px-6 text-center">Account Access</th>
                         <th className="py-3 px-6 text-right">Security Actions</th>
                       </tr>
@@ -1984,7 +1997,7 @@ export default function AdminDashboard() {
                     <tbody className="divide-y divide-slate-100 text-xs">
                       {filteredUsers.length === 0 ? (
                         <tr>
-                          <td colSpan="6" className="py-12 text-center text-slate-400 font-semibold">
+                          <td colSpan="7" className="py-12 text-center text-slate-400 font-semibold">
                             No accounts match the selected filters.
                           </td>
                         </tr>
@@ -1996,7 +2009,17 @@ export default function AdminDashboard() {
                               <p className="text-[10px] text-slate-400">{u.extra}</p>
                             </td>
                             <td className="py-4 px-6 font-mono text-xs text-slate-600">
-                              {u.email}
+                              {u.email || <span className="text-slate-400 italic">Not set</span>}
+                            </td>
+                            <td className="py-4 px-6 font-mono text-xs text-slate-600">
+                              {u.phone ? (
+                                <span className="inline-flex items-center gap-1">
+                                  <span>📱</span>
+                                  <span>{u.phone}</span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 italic font-sans text-[11px]">No mobile</span>
+                              )}
                             </td>
                             <td className="py-4 px-6 text-center">
                               <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${u.roleBadge}`}>
@@ -2004,15 +2027,17 @@ export default function AdminDashboard() {
                               </span>
                             </td>
                             <td className="py-4 px-6 text-center">
-                              {u.isVerified ? (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                  ✓ Verified
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
-                                  ⏳ Pending OTP
-                                </span>
-                              )}
+                              <div className="flex flex-col items-center gap-1">
+                                {u.isVerified ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    ✓ {u.verificationMethod === 'mobile' ? 'Mobile Verified' : 'Email Verified'}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                                    ⏳ Pending OTP
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="py-4 px-6 text-center">
                               {u.isActive ? (
@@ -2042,10 +2067,10 @@ export default function AdminDashboard() {
                                     {u.isActive ? 'Disable' : 'Activate'}
                                   </button>
                                   <button
-                                    onClick={() => handleAdminSendResetOtp(u.role, u.id, u.email)}
+                                    onClick={() => handleAdminSendResetOtp(u.role, u.id, u.email || u.phone)}
                                     disabled={isProcessingUserAction}
                                     className="px-2.5 py-1 bg-blue-50 border border-blue-200 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                                    title="Send password reset OTP code directly to user's registered email"
+                                    title="Send password reset OTP code directly to user"
                                   >
                                     Send Reset OTP
                                   </button>
@@ -2074,7 +2099,13 @@ export default function AdminDashboard() {
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <p className="font-extrabold text-slate-900 text-sm">{u.name}</p>
-                            <p className="text-slate-500 text-xs font-mono break-all">{u.email}</p>
+                            <p className="text-slate-500 text-xs font-mono break-all">{u.email || 'No email'}</p>
+                            {u.phone && (
+                              <p className="text-indigo-600 text-xs font-mono mt-0.5 flex items-center gap-1">
+                                <span>📱</span>
+                                <span>{u.phone}</span>
+                              </p>
+                            )}
                             <p className="text-[10px] text-slate-400 mt-0.5">{u.extra}</p>
                           </div>
                           <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border shrink-0 ${u.roleBadge}`}>
@@ -2086,7 +2117,7 @@ export default function AdminDashboard() {
                           <div className="flex-1 bg-slate-50 p-2 rounded-xl text-center">
                             <span className="text-[9px] text-slate-400 uppercase font-bold block">Verification</span>
                             {u.isVerified ? (
-                              <span className="text-emerald-700 font-bold text-[11px]">✓ Verified</span>
+                              <span className="text-emerald-700 font-bold text-[11px]">✓ {u.verificationMethod === 'mobile' ? 'Mobile' : 'Email'}</span>
                             ) : (
                               <span className="text-amber-600 font-bold text-[11px]">⏳ Pending OTP</span>
                             )}
