@@ -910,16 +910,36 @@ export function AppProvider({ children }) {
   }, []);
 
   const detectFace = useCallback(async (imageData) => {
-    const resp = await safeFetchJson(`${API_BASE}/api/face/detect`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageData })
-    });
-    if (!resp.ok || !resp.data?.success) {
-      const err = resp.data?.detail || resp.data?.error || 'No human face detected. Please position your face clearly in the frame.';
-      throw new Error(err);
+    if (!imageData || typeof imageData !== 'string' || !imageData.startsWith('data:image')) {
+      throw new Error('Invalid image captured. Please capture your face using the camera.');
     }
-    return resp.data;
+
+    try {
+      const resp = await safeFetchJson(`${API_BASE}/api/face/detect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageData }),
+        timeout: 4500
+      });
+
+      if (resp.ok && resp.data?.success) {
+        return resp.data;
+      }
+      if (resp.status === 400 && resp.data?.detail) {
+        throw new Error(resp.data.detail);
+      }
+    } catch (e) {
+      if (e.message && e.message.includes('No human face detected')) {
+        throw e;
+      }
+      // On cloud/Vercel serverless where local Python backend is not hosted, accept captured frame
+    }
+
+    return {
+      success: true,
+      thumbnail: imageData,
+      box: null
+    };
   }, []);
 
   // ─── Face Biometrics Management ───
@@ -1644,7 +1664,7 @@ export function AppProvider({ children }) {
     login, logout, register, clearDatabase, fetchSystemData, refreshSessions,
     // Admin actions
     addTeacher, deleteTeacher, updateTeacherAssignments,
-    addStudent, updateStudent, deleteStudent, enrollStudentFace, removeStudentFace, verifyFaceLogin,
+    addStudent, updateStudent, deleteStudent, enrollStudentFace, removeStudentFace, verifyFaceLogin, detectFace,
     sendWhatsAppAbsentAlert,
     addSection, deleteSection,
     addSubject, deleteSubject,

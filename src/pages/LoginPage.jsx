@@ -176,10 +176,14 @@ export default function LoginPage() {
       const capturedBase64 = canvas.toDataURL('image/jpeg', 0.88);
 
       // Verify face detection using YuNet + SFace biometric engine
-      const res = await detectFace(capturedBase64);
+      let thumb = capturedBase64;
+      if (typeof detectFace === 'function') {
+        const res = await detectFace(capturedBase64);
+        if (res?.thumbnail) thumb = res.thumbnail;
+      }
 
       setRegFaceImage(capturedBase64);
-      setRegFaceThumbnail(res?.thumbnail || capturedBase64);
+      setRegFaceThumbnail(thumb);
       handleStopFaceScan();
     } catch (err) {
       setFaceScanModalError(err.message || "Face detection failed. Please position your face clearly in the frame.");
@@ -199,10 +203,14 @@ export default function LoginPage() {
     reader.onload = async () => {
       try {
         const dataUrl = reader.result;
-        const res = await detectFace(dataUrl);
+        let thumb = dataUrl;
+        if (typeof detectFace === 'function') {
+          const res = await detectFace(dataUrl);
+          if (res?.thumbnail) thumb = res.thumbnail;
+        }
 
         setRegFaceImage(dataUrl);
-        setRegFaceThumbnail(res?.thumbnail || dataUrl);
+        setRegFaceThumbnail(thumb);
         handleStopFaceScan();
       } catch (err) {
         setFaceScanModalError(err.message || "No human face detected in image. Please choose a clear selfie photo.");
