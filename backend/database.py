@@ -903,6 +903,10 @@ def verify_otp_verification(identifier: str, role: str, otp: str, purpose: str =
 
     stored_otp, expires_at, attempts, is_verified = row[0], row[1], row[2], row[3]
 
+    if is_verified:
+        conn.close()
+        return False, "This verification code has already been used. Please request a fresh code."
+
     if attempts >= 5:
         conn.close()
         return False, "Too many incorrect attempts. Please request a new verification code."

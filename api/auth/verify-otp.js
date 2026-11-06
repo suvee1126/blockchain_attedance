@@ -53,6 +53,10 @@ export default async function handler(req, res) {
       return res.status(400).json({ detail: 'Verification record not found. Please request a new code.' });
     }
 
+    if (data.verified) {
+      return res.status(400).json({ detail: 'This verification code has already been used. Please request a fresh code.' });
+    }
+
     if (new Date(data.expiresAt) < new Date()) {
       return res.status(400).json({ detail: 'Verification code has expired (5-minute limit). Please request a new code.' });
     }
@@ -83,3 +87,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ detail: err.message || 'Internal server error' });
   }
 }
+

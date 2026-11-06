@@ -161,10 +161,12 @@ export default function LoginPage() {
     try {
       const targetIdentifier = verificationMethod === 'email' ? cleanEmail : cleanPhone;
       const otpRes = await sendOtp(targetIdentifier, selectedRole, 'verification', verificationMethod);
+      if (otpRes?.emailSent === false && verificationMethod === 'email') {
+        throw new Error(otpRes.errorNotice || `Failed to dispatch verification email to ${targetIdentifier}.`);
+      }
       setOtpSentIdentifier(targetIdentifier);
       setOtpSentMethod(verificationMethod);
       setOtpTimer(300); // 5 minutes expiration
-      if (otpRes?.devOtp) setDevOtpHint(otpRes.devOtp);
       setShowOtpModal(true);
       setSuccessMsg(`Verification code dispatched to ${targetIdentifier}. Valid for 5 minutes.`);
     } catch (err) {
@@ -180,8 +182,10 @@ export default function LoginPage() {
     setIsLoading(true);
     try {
       const otpRes = await sendOtp(otpSentIdentifier, selectedRole, 'verification', otpSentMethod);
+      if (otpRes?.emailSent === false && otpSentMethod === 'email') {
+        throw new Error(otpRes.errorNotice || `Failed to resend email to ${otpSentIdentifier}.`);
+      }
       setOtpTimer(300);
-      if (otpRes?.devOtp) setDevOtpHint(otpRes.devOtp);
       setSuccessMsg(`New 6-digit code dispatched to ${otpSentIdentifier}!`);
     } catch (err) {
       setError(err.message || 'Failed to resend code. Please try again.');

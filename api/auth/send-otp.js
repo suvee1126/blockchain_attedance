@@ -138,19 +138,26 @@ export default async function handler(req, res) {
       console.warn('[Vercel Serverless] Firestore OTP sync warning:', fsErr);
     }
 
+    if (method === 'email' && !emailSent) {
+      return res.status(502).json({
+        success: false,
+        emailSent: false,
+        detail: `Email delivery failed for '${cleanEmail}': ${errorMsg || 'SMTP connection timed out or was rejected.'}`,
+        errorNotice: errorMsg
+      });
+    }
+
     return res.status(200).json({
       success: true,
       method,
       identifier,
       expiresInSeconds: 300,
-      emailSent,
-      smsSent,
+      emailSent: true,
+      smsSent: method === 'mobile',
       provider: 'Gmail SMTP',
-      message: emailSent
-        ? `Verification code has been sent to your Gmail inbox (${identifier}).`
-        : `Verification code ready for ${identifier}.`,
-      errorNotice: errorMsg,
-      devOtp: !emailSent ? otp : null
+      message: `Verification code has been sent to your Gmail inbox (${identifier}).`,
+      errorNotice: null,
+      devOtp: null
     });
   } catch (err) {
     console.error('[Vercel Serverless Error]:', err);

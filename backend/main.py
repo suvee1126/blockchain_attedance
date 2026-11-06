@@ -115,17 +115,31 @@ def send_otp_endpoint(req: SendOtpRequest):
 
     err_notice = dispatch.get("error")
 
+    if method == "email" and not is_sent:
+        error_detail = err_notice or "Could not connect to SMTP server. Outbound port 587/465 is unreachable on current network."
+        raise HTTPException(
+            status_code=502,
+            detail=f"Email delivery failed for '{identifier}': {error_detail}"
+        )
+
+    if method == "mobile" and not is_sent:
+        error_detail = err_notice or "SMS gateway error."
+        raise HTTPException(
+            status_code=502,
+            detail=f"SMS delivery failed for '{identifier}': {error_detail}"
+        )
+
     return {
         "success": True,
         "method": method,
         "identifier": identifier,
         "expiresInSeconds": 300,
-        "emailSent": is_sent if method == "email" else False,
-        "smsSent": is_sent if method == "mobile" else False,
+        "emailSent": True if method == "email" else False,
+        "smsSent": True if method == "mobile" else False,
         "provider": dispatch.get("provider", "SMTP"),
-        "errorNotice": err_notice,
-        "message": f"6-digit verification code sent to your Gmail inbox ({identifier}). Check your inbox and spam folder." if is_sent else f"Verification code ready for {identifier}.",
-        "devOtp": dispatch.get("otp") if not is_sent else None
+        "errorNotice": None,
+        "message": f"6-digit verification code sent to your Gmail inbox ({identifier}). Check your inbox and spam folder.",
+        "devOtp": None
     }
 
 
@@ -1060,10 +1074,12 @@ async def admin_toggle_user_status(req: ToggleUserStatusRequest):
     return {"success": True, "role": req.role, "userId": req.userId, "isActive": req.isActive}
 
 @app.post("/api/admin/users/request-reset")
-async def admin_request_user_reset(req: AdminResetRequest):
-    otp = generate_secure_otp()
-    set_user_otp(req.role, req.email, otp, "reset")
-    send_verification_email(req.email, otp, "reset")
+def admin_request_user_reset(req: AdminResetRequest):
+    otp, expires_at = generate_secure_otp()
+    set_user_otp(req.email, req.role, otp, expires_at, "reset")
+    dispatch = send_verification_email(req.email, otp, "Password Reset")
+    if not dispatch.get("emailSent"):
+        raise HTTPException(status_code=502, detail=f"Failed to deliver reset email to {req.email}: {dispatch.get('error')}")
     return {"success": True, "message": f"Password reset OTP sent to {req.email}", "email": req.email}
 
 @app.get("/api/admin/users")

@@ -1372,13 +1372,19 @@ export function AppProvider({ children }) {
       timeout: 15000
     });
     if (resp.ok && resp.isJson && resp.data) {
+      if (resp.data.emailSent === false && method === 'email') {
+        throw new Error(resp.data.errorNotice || resp.data.detail || `Failed to deliver email to ${cleanId}.`);
+      }
       return resp.data;
     }
     if (!resp.ok && resp.isJson && resp.data?.detail) {
       throw new Error(resp.data.detail);
     }
+    if (!resp.ok && resp.error) {
+      throw new Error(`Authentication server error: ${resp.error}`);
+    }
 
-    // 2. Cloud Firestore fallback (5 minutes expiry)
+    // 2. Cloud Firestore sync
     const otp = String(Math.floor(100000 + Math.random() * 900000));
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
     const docKey = `${cleanId.replace(/[^a-zA-Z0-9_+@-]/g, '_')}_${purpose}`;
@@ -1393,11 +1399,15 @@ export function AppProvider({ children }) {
       verified: false
     });
 
+    if (method === 'email') {
+      throw new Error(`Unable to deliver OTP email to ${cleanId}. Please check your internet connection or email service.`);
+    }
+
     return {
       success: true,
       method,
       identifier: cleanId,
-      message: `Verification code sent to ${cleanId}.`,
+      message: `Verification code ready for ${cleanId}.`,
       emailSent: false,
       smsSent: false,
       devOtp: otp,

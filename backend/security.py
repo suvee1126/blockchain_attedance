@@ -259,11 +259,11 @@ def send_verification_email(to_email: str, otp: str, purpose: str = "Email Verif
                 msg.attach(MIMEText(html_content, "html"))
 
                 if cfg["port"] == 465:
-                    with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=12) as server:
+                    with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=6) as server:
                         server.login(cfg["user"], cfg["password"])
                         server.sendmail(cfg["user"], [to_clean], msg.as_string())
                 else:
-                    with smtplib.SMTP(cfg["host"], cfg["port"], timeout=12) as server:
+                    with smtplib.SMTP(cfg["host"], cfg["port"], timeout=6) as server:
                         server.ehlo()
                         server.starttls()
                         server.ehlo()
@@ -278,14 +278,14 @@ def send_verification_email(to_email: str, otp: str, purpose: str = "Email Verif
                 # If Port 587 failed, attempt Port 465 SSL fallback if host is Gmail
                 if "gmail" in cfg["host"].lower() and cfg["port"] != 465:
                     try:
-                        print(f"[*] Port 587 connection error ({e}), attempting fallback via Gmail SSL Port 465...")
-                        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=12) as ssl_server:
+                        print(f"[*] Port 587 error ({e}), attempting fallback via Gmail SSL Port 465...")
+                        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=6) as ssl_server:
                             ssl_server.login(cfg["user"], cfg["password"])
                             ssl_server.sendmail(cfg["user"], [to_clean], msg.as_string())
                         email_sent = True
                         print(f"[EMAIL SUCCESS] Dispatched OTP code to Gmail inbox: {to_clean} via smtp.gmail.com:465 (SSL)")
                     except Exception as ssl_err:
-                        error_msg = f"SMTP error (587): {str(e)} | SSL fallback (465): {str(ssl_err)}"
+                        error_msg = f"SMTP error on port 587 ({e}) and port 465 ({ssl_err}). Outbound SMTP is blocked by current network/firewall gateway. Connect to mobile hotspot or home network where port 587 is open."
                         print(f"[!] {error_msg}")
                 else:
                     error_msg = f"SMTP delivery error ({cfg['host']}:{cfg['port']}): {str(e)}"
