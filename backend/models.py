@@ -10,11 +10,11 @@ class LoginRequest(BaseModel):
 
 class RegisterRequest(BaseModel):
     role: str
-    name: str
+    name: Optional[str] = ""
     email: Optional[str] = ""
     phone: Optional[str] = ""
     verificationMethod: Optional[str] = "email"
-    password: str
+    password: Optional[str] = ""
     usn: Optional[str] = None
     sectionId: Optional[str] = None
     department: Optional[str] = "Computer Science"
@@ -22,6 +22,8 @@ class RegisterRequest(BaseModel):
     assignedSections: Optional[List[str]] = []
     parentName: Optional[str] = ""
     parentPhone: Optional[str] = ""
+    faceImage: Optional[str] = ""
+    userData: Optional[Dict[str, Any]] = None
 
 class SectionCreate(BaseModel):
     id: Optional[str] = None
@@ -55,6 +57,8 @@ class StudentCreate(BaseModel):
     password: Optional[str] = "pass"
     parentName: Optional[str] = ""
     parentPhone: Optional[str] = ""
+    faceImage: Optional[str] = ""
+    userData: Optional[Dict[str, Any]] = None
 
 class StudentUpdate(BaseModel):
     name: str
@@ -64,6 +68,8 @@ class StudentUpdate(BaseModel):
     password: Optional[str] = None
     parentName: Optional[str] = ""
     parentPhone: Optional[str] = ""
+    faceImage: Optional[str] = ""
+    userData: Optional[Dict[str, Any]] = None
 
 class WhatsAppNotificationRequest(BaseModel):
     studentId: int
@@ -102,8 +108,11 @@ class NCRecordCreate(BaseModel):
     reason: str
     date: Optional[str] = None
 
+class FaceDetectRequest(BaseModel):
+    imageData: str
+
 class FaceEnrollRequest(BaseModel):
-    studentId: int
+    studentId: Optional[int] = None
     imageData: str
 
 class FaceLoginRequest(BaseModel):

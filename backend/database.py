@@ -469,12 +469,12 @@ def enroll_student_face(student_id: int, feature_vector: list, thumbnail_b64: st
     )
     conn.commit()
     conn.close()
-    sync_doc_to_firebase("students", str(student_id), {
-        "faceRegistered": True,
-        "faceDescriptor": feature_vector,
-        "faceImage": thumbnail_b64,
-        "faceEnrolledAt": enrolled_at
-    })
+    update_doc_in_supabase("students", {
+        "face_registered": True,
+        "face_descriptor": feature_vector,
+        "face_image": thumbnail_b64,
+        "face_enrolled_at": enrolled_at
+    }, {"id": str(student_id)})
 
 def remove_student_face(student_id: int):
     conn = get_db_connection()
@@ -484,12 +484,12 @@ def remove_student_face(student_id: int):
     )
     conn.commit()
     conn.close()
-    sync_doc_to_firebase("students", str(student_id), {
-        "faceRegistered": False,
-        "faceDescriptor": [],
-        "faceImage": "",
-        "faceEnrolledAt": ""
-    })
+    update_doc_in_supabase("students", {
+        "face_registered": False,
+        "face_descriptor": [],
+        "face_image": "",
+        "face_enrolled_at": ""
+    }, {"id": str(student_id)})
 
 def insert_student(s_id: int, name: str, usn: str, email: str, section_id: str, password: str = "pass", parent_name: str = "", parent_phone: str = "", is_verified: int = 1, is_active: int = 1, phone: str = "", phone_verified: int = 0, email_verified: int = 1, verification_method: str = "email"):
     email_clean = (email or "").strip().lower()

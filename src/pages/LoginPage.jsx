@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp, validatePasswordRules } from '../AppContext';
 import { SummitLogo } from '../components/SummitLogo';
@@ -19,6 +19,8 @@ export default function LoginPage() {
     verifyOtp,
     forgotPasswordRequest,
     forgotPasswordReset,
+    detectFace,
+    enrollStudentFace,
   } = useApp();
 
   const [authMode, setAuthMode] = useState('login'); // 'login' | 'register'
@@ -42,6 +44,27 @@ export default function LoginPage() {
   const [regParentName, setRegParentName] = useState('');
   const [regParentPhone, setRegParentPhone] = useState('');
   const [regDept, setRegDept] = useState('Computer Science');
+
+  // Student Face Registration states
+  const [regFaceImage, setRegFaceImage] = useState('');
+  const [regFaceThumbnail, setRegFaceThumbnail] = useState('');
+  const [showFaceScanModal, setShowFaceScanModal] = useState(false);
+  const [faceScanStream, setFaceScanStream] = useState(null);
+  const [isDetectingFace, setIsDetectingFace] = useState(false);
+  const [faceScanModalError, setFaceScanModalError] = useState('');
+  const faceScanVideoRef = useRef(null);
+  const faceScanFileInputRef = useRef(null);
+
+  // Stop camera tracks if component unmounts
+  useEffect(() => {
+    return () => {
+      if (faceScanStream) {
+        try {
+          faceScanStream.getTracks().forEach((track) => track.stop());
+        } catch (e) {}
+      }
+    };
+  }, [faceScanStream]);
 
   // Registration OTP Modal state (5-Minute Live Countdown)
   const [showOtpModal, setShowOtpModal] = useState(false);
@@ -83,6 +106,117 @@ export default function LoginPage() {
     const m = Math.floor(secs / 60);
     const s = secs % 60;
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  // Face Scan Camera & Biometric Verification Handlers
+  const handleStartFaceScan = async () => {
+    setFaceScanModalError('');
+    setShowFaceScanModal(true);
+
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      setFaceScanModalError("Live camera access is not supported or was blocked by browser. Please tap 'Upload / Snap Photo' below.");
+      return;
+    }
+
+    try {
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
+        });
+      } catch (err1) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+        } catch (err2) {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
+      }
+
+      setFaceScanStream(stream);
+      setTimeout(() => {
+        if (faceScanVideoRef.current) {
+          faceScanVideoRef.current.srcObject = stream;
+          faceScanVideoRef.current.play().catch(() => {});
+        }
+      }, 100);
+    } catch (err) {
+      console.warn("Face camera access error:", err);
+      setFaceScanModalError("Unable to access camera. Please allow camera permissions, or use 'Upload / Snap Photo' below.");
+    }
+  };
+
+  const handleStopFaceScan = () => {
+    if (faceScanStream) {
+      try {
+        faceScanStream.getTracks().forEach((track) => track.stop());
+      } catch (e) {}
+      setFaceScanStream(null);
+    }
+    if (faceScanVideoRef.current) {
+      faceScanVideoRef.current.srcObject = null;
+    }
+    setShowFaceScanModal(false);
+    setFaceScanModalError('');
+    setIsDetectingFace(false);
+  };
+
+  const handleCaptureFaceScan = async () => {
+    setFaceScanModalError('');
+    setIsDetectingFace(true);
+
+    try {
+      const video = faceScanVideoRef.current;
+      if (!video) throw new Error("No active camera preview found. Please check permissions.");
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const capturedBase64 = canvas.toDataURL('image/jpeg', 0.88);
+
+      // Verify face detection using YuNet + SFace biometric engine
+      const res = await detectFace(capturedBase64);
+
+      setRegFaceImage(capturedBase64);
+      setRegFaceThumbnail(res?.thumbnail || capturedBase64);
+      handleStopFaceScan();
+    } catch (err) {
+      setFaceScanModalError(err.message || "Face detection failed. Please position your face clearly in the frame.");
+    } finally {
+      setIsDetectingFace(false);
+    }
+  };
+
+  const handleFaceFileFallback = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setFaceScanModalError('');
+    setIsDetectingFace(true);
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const dataUrl = reader.result;
+        const res = await detectFace(dataUrl);
+
+        setRegFaceImage(dataUrl);
+        setRegFaceThumbnail(res?.thumbnail || dataUrl);
+        handleStopFaceScan();
+      } catch (err) {
+        setFaceScanModalError(err.message || "No human face detected in image. Please choose a clear selfie photo.");
+      } finally {
+        setIsDetectingFace(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRetakeFaceScan = () => {
+    setRegFaceImage('');
+    setRegFaceThumbnail('');
+    handleStartFaceScan();
   };
 
   const handleRoleChange = (roleId) => {
@@ -220,7 +354,7 @@ export default function LoginPage() {
         const cleanUsn = regUsn.trim();
         const sectionId = regSectionId || (sections[0] ? sections[0].id : 's1');
 
-        await register('student', {
+        const newStudent = await register('student', {
           name: regName.trim(),
           email: finalEmail,
           phone: finalPhone,
@@ -230,7 +364,17 @@ export default function LoginPage() {
           sectionId: sectionId,
           parentName: regParentName.trim(),
           parentPhone: regParentPhone.trim(),
+          faceImage: regFaceImage || '',
         });
+
+        // Ensure face biometric is permanently enrolled and saved in Supabase
+        if (regFaceImage && newStudent?.id) {
+          try {
+            await enrollStudentFace(newStudent.id, regFaceImage);
+          } catch (enrollErr) {
+            console.warn("Face enrollment follow-up:", enrollErr);
+          }
+        }
       } else if (selectedRole === 'teacher') {
         await register('teacher', {
           name: regName.trim(),
@@ -243,11 +387,17 @@ export default function LoginPage() {
       }
 
       setShowOtpModal(false);
-      setSuccessMsg(`${otpSentMethod === 'email' ? 'Email' : 'Mobile number'} verified and account activated successfully! You may now sign in.`);
+      if (regFaceImage) {
+        setSuccessMsg('Face Registered Successfully! Account activated. You may now sign in.');
+      } else {
+        setSuccessMsg(`${otpSentMethod === 'email' ? 'Email' : 'Mobile number'} verified and account activated successfully! You may now sign in.`);
+      }
       setAuthMode('login');
       setEmail(otpSentIdentifier);
       setPassword(regPassword.trim());
       setOtpCode('');
+      setRegFaceImage('');
+      setRegFaceThumbnail('');
     } catch (err) {
       setError(err.message || 'Verification failed. Incorrect OTP.');
     } finally {
@@ -593,6 +743,67 @@ export default function LoginPage() {
                       />
                     </div>
                   </div>
+
+                  {/* Face Registration Section */}
+                  <div className="pt-2 border-t border-slate-100 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-[10px] sm:text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        Face Registration
+                      </label>
+                      {regFaceImage && (
+                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          ✓ Face Captured
+                        </span>
+                      )}
+                    </div>
+
+                    {!regFaceImage ? (
+                      <div className="p-3 rounded-xl border border-dashed border-blue-200 bg-blue-50/40 text-center space-y-2">
+                        <p className="text-[11px] text-slate-600">
+                          Scan your face for biometric attendance verification and quick sign-in.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleStartFaceScan}
+                          className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs shadow-sm transition active:scale-95"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                          <span>Scan Face</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="p-2.5 rounded-xl border border-emerald-200 bg-emerald-50/40 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5">
+                          <img
+                            src={regFaceThumbnail || regFaceImage}
+                            alt="Captured Face"
+                            className="w-11 h-11 rounded-lg object-cover border-2 border-emerald-400 shadow-sm"
+                          />
+                          <div>
+                            <p className="text-xs font-bold text-emerald-800">
+                              ✓ Face Captured & Validated
+                            </p>
+                            <p className="text-[10px] text-slate-500">
+                              Ready to permanently save in Supabase
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRetakeFaceScan}
+                          className="text-xs font-medium text-slate-700 hover:text-slate-900 bg-white border border-slate-200 hover:bg-slate-50 px-2.5 py-1.5 rounded-lg shadow-2xs transition active:scale-95"
+                        >
+                          Retake Scan
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </>
               )}
 
@@ -882,6 +1093,105 @@ export default function LoginPage() {
                 </button>
               </form>
             )}
+          </div>
+        </div>
+      )}
+      {/* Face Scan Camera Modal */}
+      {showFaceScanModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fadeIn">
+          <div className="relative w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Student Face Registration</h3>
+                  <p className="text-[10px] text-slate-500">Live AI Biometric Detection</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleStopFaceScan}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Video Viewport with Biometric Oval Guide */}
+            <div className="relative aspect-4/3 w-full overflow-hidden rounded-xl bg-slate-900 flex items-center justify-center">
+              <video
+                ref={faceScanVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover transform -scale-x-100"
+              />
+              {/* Biometric Oval Guide Overlay */}
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                <div className="w-44 h-56 rounded-[50%] border-2 border-dashed border-blue-400/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.4)]"></div>
+              </div>
+              <div className="pointer-events-none absolute bottom-2 inset-x-0 text-center">
+                <span className="inline-block bg-slate-900/80 backdrop-blur-xs text-white text-[10px] font-medium px-3 py-1 rounded-full">
+                  Center your face inside the oval
+                </span>
+              </div>
+            </div>
+
+            {faceScanModalError && (
+              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium">
+                {faceScanModalError}
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={handleCaptureFaceScan}
+                disabled={isDetectingFace}
+                className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition disabled:opacity-50 active:scale-98 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {isDetectingFace ? (
+                  <>
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span>Detecting Face Biometric...</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span>Capture & Detect Face</span>
+                  </>
+                )}
+              </button>
+
+              <div className="flex items-center justify-center pt-1">
+                <input
+                  ref={faceScanFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="user"
+                  onChange={handleFaceFileFallback}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => faceScanFileInputRef.current?.click()}
+                  className="text-[11px] text-slate-500 hover:text-slate-700 underline cursor-pointer"
+                >
+                  Camera not working? Upload / Snap Photo instead
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

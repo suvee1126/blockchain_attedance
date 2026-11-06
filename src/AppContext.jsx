@@ -712,7 +712,7 @@ export function AppProvider({ children }) {
     const resp = await safeFetchJson(`${API_BASE}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role, userData })
+      body: JSON.stringify({ role, ...userData, userData })
     });
 
     if (resp.ok && resp.isJson && resp.data?.success && resp.data?.user) {
@@ -907,6 +907,19 @@ export function AppProvider({ children }) {
 
     safeFetchJson(`${API_BASE}/api/students/${id}`, { method: 'DELETE' });
     deleteDocFromFirestore('students', id);
+  }, []);
+
+  const detectFace = useCallback(async (imageData) => {
+    const resp = await safeFetchJson(`${API_BASE}/api/face/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageData })
+    });
+    if (!resp.ok || !resp.data?.success) {
+      const err = resp.data?.detail || resp.data?.error || 'No human face detected. Please position your face clearly in the frame.';
+      throw new Error(err);
+    }
+    return resp.data;
   }, []);
 
   // ─── Face Biometrics Management ───
