@@ -1,0 +1,5 @@
+# Ignore local Python backend & dependencies from Vercel Cloud Build
+backend/
+requirements.txt
+*.db
+*.sqlite
