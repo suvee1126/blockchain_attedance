@@ -1,19 +1,6 @@
-const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/smart-add-f776e/databases/(default)/documents';
-
-function parseFirestoreDoc(doc) {
-  if (!doc || !doc.fields) return null;
-  const res = {};
-  for (const [k, v] of Object.entries(doc.fields)) {
-    if (v.stringValue !== undefined) res[k] = v.stringValue;
-    else if (v.integerValue !== undefined) res[k] = Number(v.integerValue);
-    else if (v.booleanValue !== undefined) res[k] = v.booleanValue;
-    else if (v.nullValue !== undefined) res[k] = null;
-    else if (v.arrayValue && v.arrayValue.values) {
-      res[k] = v.arrayValue.values.map(item => item.stringValue || item.integerValue || item);
-    }
-  }
-  return res;
-}
+// Supabase REST endpoint for centralized OTP verification
+const SUPABASE_URL = (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://qheqjumkbqczmygfymwe.supabase.co').replace(/\/$/, '');
+const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || 'sb_publishable_hp-QiVaif8bW6GDtWzweyw_O3But7xN';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -38,16 +25,20 @@ export default async function handler(req, res) {
       return res.status(400).json({ detail: 'Identifier and OTP code are required.' });
     }
 
-    const docKey = `${identifier.replace(/[^a-zA-Z0-9_+@-]/g, '_')}_${purpose}`;
-    const firestoreUrl = `${FIRESTORE_BASE}/otp_verifications/${encodeURIComponent(docKey)}`;
+    const queryUrl = `${SUPABASE_URL}/rest/v1/otp_verifications?identifier=eq.${encodeURIComponent(identifier)}&purpose=eq.${encodeURIComponent(purpose)}&select=*`;
+    const sbRes = await fetch(queryUrl, {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`
+      }
+    });
 
-    const fsRes = await fetch(firestoreUrl);
-    if (!fsRes.ok) {
+    if (!sbRes.ok) {
       return res.status(400).json({ detail: 'No active verification code found for this account. Please request a new code.' });
     }
 
-    const fsDoc = await fsRes.json();
-    const data = parseFirestoreDoc(fsDoc);
+    const records = await sbRes.json();
+    const data = Array.isArray(records) && records.length > 0 ? records[0] : null;
 
     if (!data || !data.otp) {
       return res.status(400).json({ detail: 'Verification record not found. Please request a new code.' });
@@ -57,24 +48,34 @@ export default async function handler(req, res) {
       return res.status(400).json({ detail: 'This verification code has already been used. Please request a fresh code.' });
     }
 
-    if (new Date(data.expiresAt) < new Date()) {
+    const expiresAt = data.expires_at || data.expiresAt;
+    if (new Date(expiresAt) < new Date()) {
       return res.status(400).json({ detail: 'Verification code has expired (5-minute limit). Please request a new code.' });
     }
 
     if (data.otp !== otp) {
+      // Increment attempts
+      await fetch(`${SUPABASE_URL}/rest/v1/otp_verifications?identifier=eq.${encodeURIComponent(identifier)}&purpose=eq.${encodeURIComponent(purpose)}`, {
+        method: 'PATCH',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ attempts: (data.attempts || 0) + 1 })
+      });
       return res.status(400).json({ detail: 'Incorrect verification code. Please check and try again.' });
     }
 
-    // Mark verified in Firestore
-    await fetch(firestoreUrl, {
+    // Mark verified in Supabase
+    await fetch(`${SUPABASE_URL}/rest/v1/otp_verifications?identifier=eq.${encodeURIComponent(identifier)}&purpose=eq.${encodeURIComponent(purpose)}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fields: {
-          ...fsDoc.fields,
-          verified: { booleanValue: true }
-        }
-      })
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ verified: true })
     });
 
     return res.status(200).json({
@@ -87,4 +88,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ detail: err.message || 'Internal server error' });
   }
 }
-

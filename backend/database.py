@@ -5,9 +5,11 @@ import sqlite3
 import json
 import os
 from typing import List, Dict, Any, Optional, Tuple
-from .firebase_db import (
-    sync_doc_to_firebase, delete_doc_from_firebase,
-    is_firebase_active, clear_all_firebase_data
+from .supabase_db import (
+    sync_doc_to_supabase as sync_doc_to_firebase,
+    delete_doc_from_supabase as delete_doc_from_firebase,
+    is_supabase_active as is_firebase_active,
+    clear_all_supabase_data as clear_all_firebase_data
 )
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "smart_attendance.db")

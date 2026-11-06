@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { supabase } from './supabaseClient';
 import {
   initialStudents, initialTeachers, initialSubjects,
   initialSections, generateSubjectAttendance, systemStats,
@@ -53,114 +54,151 @@ async function safeFetchJson(url, options = {}) {
   }
 }
 
-// ─── Cloud Firestore Centralized Database ───
-const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/smart-add-f776e/databases/(default)/documents';
-
-function toFirestoreValue(val) {
-  if (val === null || val === undefined) return { nullValue: null };
-  if (typeof val === 'string') return { stringValue: val };
-  if (typeof val === 'boolean') return { booleanValue: val };
-  if (typeof val === 'number') {
-    return Number.isInteger(val) ? { integerValue: String(val) } : { doubleValue: val };
-  }
-  if (Array.isArray(val)) {
-    return { arrayValue: { values: val.map(toFirestoreValue) } };
-  }
-  if (typeof val === 'object') {
-    const fields = {};
-    for (const [k, v] of Object.entries(val)) {
-      if (v !== undefined) fields[k] = toFirestoreValue(v);
+// ─── Supabase Centralized PostgreSQL Database ───
+function toSupabaseRow(table, docId, data) {
+  const row = { ...data };
+  if (docId !== undefined && docId !== null) {
+    if (table === 'students') {
+      const numId = Number(docId);
+      if (!isNaN(numId)) row.id = numId;
+    } else if (table === 'marks_config') {
+      row.subject_id = String(docId);
+    } else if (table !== 'otp_verifications' && table !== 'password_resets') {
+      row.id = String(docId);
     }
-    return { mapValue: { fields } };
   }
-  return { stringValue: String(val) };
+
+  // CamelCase to Snake_case mapping
+  if (row.sectionId !== undefined) { row.section_id = row.sectionId; delete row.sectionId; }
+  if (row.assignedSubjects !== undefined) { row.assigned_subjects = row.assignedSubjects; delete row.assignedSubjects; }
+  if (row.assignedSections !== undefined) { row.assigned_sections = row.assignedSections; delete row.assignedSections; }
+  if (row.faceRegistered !== undefined) { row.face_registered = Boolean(row.faceRegistered); delete row.faceRegistered; }
+  if (row.faceDescriptor !== undefined) { row.face_descriptor = row.faceDescriptor; delete row.faceDescriptor; }
+  if (row.faceImage !== undefined) { row.face_image = row.faceImage; delete row.faceImage; }
+  if (row.faceEnrolledAt !== undefined) { row.face_enrolled_at = row.faceEnrolledAt; delete row.faceEnrolledAt; }
+  if (row.isActive !== undefined) { row.is_active = Boolean(row.isActive); delete row.isActive; }
+  if (row.isVerified !== undefined) { row.is_verified = Boolean(row.isVerified); delete row.isVerified; }
+  if (row.parentName !== undefined) { row.parent_name = row.parentName; delete row.parentName; }
+  if (row.parentPhone !== undefined) { row.parent_phone = row.parentPhone; delete row.parentPhone; }
+  if (row.teacherId !== undefined) { row.teacher_id = row.teacherId; delete row.teacherId; }
+  if (row.subjectId !== undefined) { row.subject_id = row.subjectId; delete row.subjectId; }
+  if (row.timerMinutes !== undefined) { row.timer_minutes = row.timerMinutes; delete row.timerMinutes; }
+  if (row.startedAt !== undefined) { row.started_at = row.startedAt; delete row.startedAt; }
+  if (row.presentStudents !== undefined) { row.present_students = row.presentStudents; delete row.presentStudents; }
+  if (row.teacherLat !== undefined) { row.teacher_lat = row.teacherLat; delete row.teacherLat; }
+  if (row.teacherLng !== undefined) { row.teacher_lng = row.teacherLng; delete row.teacherLng; }
+  if (row.studentName !== undefined) { row.student_name = row.studentName; delete row.studentName; }
+  if (row.studentId !== undefined) { row.student_id = Number(row.studentId) || row.studentId; delete row.studentId; }
+  if (row.blockchainHash !== undefined) { row.blockchain_hash = row.blockchainHash; delete row.blockchainHash; }
+  if (row.locationLat !== undefined) { row.location_lat = row.locationLat; delete row.locationLat; }
+  if (row.locationLng !== undefined) { row.location_lng = row.locationLng; delete row.locationLng; }
+  if (row.subjectCode !== undefined) { row.subject_code = row.subjectCode; delete row.subjectCode; }
+  if (row.subjectName !== undefined) { row.subject_name = row.subjectName; delete row.subjectName; }
+  if (row.maxCie1 !== undefined) { row.max_cie1 = row.maxCie1; delete row.maxCie1; }
+  if (row.maxCie2 !== undefined) { row.max_cie2 = row.maxCie2; delete row.maxCie2; }
+  if (row.maxSee !== undefined) { row.max_see = row.maxSee; delete row.maxSee; }
+  if (row.updatedBy !== undefined) { row.updated_by = row.updatedBy; delete row.updatedBy; }
+  if (row.updatedAt !== undefined) { row.updated_at = row.updatedAt; delete row.updatedAt; }
+  if (row.expiresAt !== undefined) { row.expires_at = row.expiresAt; delete row.expiresAt; }
+
+  return row;
 }
 
-function fromFirestoreValue(val) {
-  if (!val) return null;
-  if ('stringValue' in val) return val.stringValue;
-  if ('integerValue' in val) return parseInt(val.integerValue, 10);
-  if ('doubleValue' in val) return parseFloat(val.doubleValue);
-  if ('booleanValue' in val) return val.booleanValue;
-  if ('nullValue' in val) return null;
-  if ('arrayValue' in val) {
-    return (val.arrayValue.values || []).map(fromFirestoreValue);
-  }
-  if ('mapValue' in val) {
-    const res = {};
-    for (const [k, v] of Object.entries(val.mapValue.fields || {})) {
-      res[k] = fromFirestoreValue(v);
-    }
-    return res;
-  }
-  return null;
-}
-
-function parseFirestoreDoc(doc) {
-  if (!doc || !doc.fields) return null;
-  const res = {};
-  for (const [k, v] of Object.entries(doc.fields)) {
-    res[k] = fromFirestoreValue(v);
-  }
+function fromSupabaseRow(table, r) {
+  if (!r) return null;
+  const res = { ...r };
+  if (r.section_id !== undefined) res.sectionId = r.section_id;
+  if (r.assigned_subjects !== undefined) res.assignedSubjects = r.assigned_subjects;
+  if (r.assigned_sections !== undefined) res.assignedSections = r.assigned_sections;
+  if (r.face_registered !== undefined) res.faceRegistered = Boolean(r.face_registered);
+  if (r.face_descriptor !== undefined) res.faceDescriptor = r.face_descriptor;
+  if (r.face_image !== undefined) res.faceImage = r.face_image;
+  if (r.face_enrolled_at !== undefined) res.faceEnrolledAt = r.face_enrolled_at;
+  if (r.is_active !== undefined) res.isActive = Boolean(r.is_active);
+  if (r.is_verified !== undefined) res.isVerified = Boolean(r.is_verified);
+  if (r.parent_name !== undefined) res.parentName = r.parent_name;
+  if (r.parent_phone !== undefined) res.parentPhone = r.parent_phone;
+  if (r.teacher_id !== undefined) res.teacherId = r.teacher_id;
+  if (r.subject_id !== undefined) res.subjectId = r.subject_id;
+  if (r.timer_minutes !== undefined) res.timerMinutes = r.timer_minutes;
+  if (r.started_at !== undefined) res.startedAt = r.started_at;
+  if (r.present_students !== undefined) res.presentStudents = r.present_students;
+  if (r.teacher_lat !== undefined) res.teacherLat = r.teacher_lat;
+  if (r.teacher_lng !== undefined) res.teacherLng = r.teacher_lng;
+  if (r.student_name !== undefined) res.studentName = r.student_name;
+  if (r.student_id !== undefined) res.studentId = r.student_id;
+  if (r.blockchain_hash !== undefined) res.blockchainHash = r.blockchain_hash;
+  if (r.location_lat !== undefined) res.locationLat = r.locationLat;
+  if (r.location_lng !== undefined) res.locationLng = r.locationLng;
+  if (r.subject_code !== undefined) res.subjectCode = r.subject_code;
+  if (r.subject_name !== undefined) res.subjectName = r.subject_name;
+  if (r.max_cie1 !== undefined) res.maxCie1 = r.max_cie1;
+  if (r.max_cie2 !== undefined) res.maxCie2 = r.max_cie2;
+  if (r.max_see !== undefined) res.maxSee = r.max_see;
+  if (r.updated_by !== undefined) res.updatedBy = r.updated_by;
+  if (r.updated_at !== undefined) res.updatedAt = r.updated_at;
+  if (r.expires_at !== undefined) res.expiresAt = r.expires_at;
   return res;
 }
 
-function toFirestoreFields(obj) {
-  const fields = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) {
-      fields[k] = toFirestoreValue(v);
+// Global Supabase Helpers that run on ALL devices with non-blocking timeout
+async function syncDocToSupabase(table, docId, data, updateMask = null) {
+  if (!docId && !data) return;
+  try {
+    const targetTable = table === 'password_resets' ? 'otp_verifications' : table;
+    const row = toSupabaseRow(targetTable, docId, data);
+    
+    // If updating a student by email string instead of id
+    if (targetTable === 'students' && isNaN(Number(docId)) && typeof docId === 'string' && docId.includes('@')) {
+      await supabase.from('students').update(row).eq('email', docId.toLowerCase());
+      return;
     }
+
+    const { error } = await supabase.from(targetTable).upsert([row]);
+    if (error) {
+      console.warn('Supabase sync warning for ' + targetTable + '/' + docId + ':', error.message);
+    }
+  } catch (err) {
+    console.warn('Supabase sync exception for ' + table + '/' + docId + ':', err);
   }
-  return { fields };
 }
 
-// Global Cloud Firestore Helpers that run on ALL devices with non-blocking timeout
-async function syncDocToFirestore(collection, docId, data, updateMask = null) {
+async function deleteDocFromSupabase(table, docId) {
   if (!docId) return;
   try {
-    let url = `${FIRESTORE_BASE}/${collection}/${encodeURIComponent(String(docId))}`;
-    if (updateMask && Array.isArray(updateMask)) {
-      const maskQuery = updateMask.map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
-      url += `?${maskQuery}`;
+    let query = supabase.from(table);
+    if (table === 'students' && !isNaN(Number(docId))) {
+      await query.delete().eq('id', Number(docId));
+    } else if (table === 'marks_config') {
+      await query.delete().eq('subject_id', String(docId));
+    } else {
+      await query.delete().eq('id', String(docId));
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2000);
-    await fetch(url, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toFirestoreFields(data)),
-      signal: controller.signal
-    });
-    clearTimeout(timer);
   } catch (err) {
-    console.warn(`Firestore sync warning for ${collection}/${docId}:`, err);
+    console.warn('Supabase delete warning for ' + table + '/' + docId + ':', err);
   }
 }
 
-async function deleteDocFromFirestore(collection, docId) {
-  if (!docId) return;
+async function fetchSupabaseTable(table) {
   try {
-    await fetch(`${FIRESTORE_BASE}/${collection}/${encodeURIComponent(String(docId))}`, {
-      method: 'DELETE'
-    });
+    const targetTable = table === 'password_resets' ? 'otp_verifications' : table;
+    const { data, error } = await supabase.from(targetTable).select('*').limit(500);
+    if (error) {
+      console.warn('Supabase fetch warning for ' + targetTable + ':', error.message);
+      return null;
+    }
+    return (data || []).map(r => fromSupabaseRow(targetTable, r));
   } catch (err) {
-    console.warn(`Firestore delete warning for ${collection}/${docId}:`, err);
-  }
-}
-
-async function fetchFirestoreCollection(collection) {
-  try {
-    const res = await fetch(`${FIRESTORE_BASE}/${collection}?pageSize=300`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data.documents) return [];
-    return data.documents.map(parseFirestoreDoc).filter(Boolean);
-  } catch (err) {
-    console.warn(`Firestore collection fetch error for ${collection}:`, err);
+    console.warn('Supabase collection fetch error for ' + table + ':', err);
     return null;
   }
 }
+
+// Aliases for seamless backward-compatibility across all handlers
+const syncDocToFirestore = syncDocToSupabase;
+const deleteDocFromFirestore = deleteDocFromSupabase;
+const fetchFirestoreCollection = fetchSupabaseTable;
+function parseFirestoreDoc(doc) { return doc; }
 
 export function AppProvider({ children }) {
   // Initialize states with local cached data or seed data
@@ -531,6 +569,33 @@ export function AppProvider({ children }) {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('online', onFocus);
     };
+  }, [fetchSystemData]);
+
+  // Supabase Realtime channel subscription for instant live syncing
+  useEffect(() => {
+    try {
+      const channel = supabase
+        .channel('schema-db-changes')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'active_sessions' }, () => {
+          fetchSystemData();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records' }, () => {
+          fetchSystemData();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'marks' }, () => {
+          fetchSystemData();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'students' }, () => {
+          fetchSystemData();
+        })
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    } catch (e) {
+      console.warn('Realtime subscription skipped:', e);
+    }
   }, [fetchSystemData]);
 
   // Dynamic system statistics calculations

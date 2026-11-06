@@ -1,20 +1,8 @@
 import nodemailer from 'nodemailer';
 
-// Cloud Firestore REST endpoint for centralized OTP sync
-const FIRESTORE_BASE = 'https://firestore.googleapis.com/v1/projects/smart-add-f776e/databases/(default)/documents';
-
-// Helper to format JavaScript objects into Firestore REST fields
-function toFirestoreFields(obj) {
-  const fields = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (typeof v === 'string') fields[k] = { stringValue: v };
-    else if (typeof v === 'number') fields[k] = { integerValue: String(Math.floor(v)) };
-    else if (typeof v === 'boolean') fields[k] = { booleanValue: v };
-    else if (Array.isArray(v)) fields[k] = { arrayValue: { values: v.map(x => ({ stringValue: String(x) })) } };
-    else if (v === null || v === undefined) fields[k] = { nullValue: null };
-  }
-  return fields;
-}
+// Supabase REST endpoint for centralized OTP sync
+const SUPABASE_URL = (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://qheqjumkbqczmygfymwe.supabase.co').replace(/\/$/, '');
+const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || 'sb_publishable_hp-QiVaif8bW6GDtWzweyw_O3But7xN';
 
 export default async function handler(req, res) {
   // CORS Headers
@@ -36,6 +24,7 @@ export default async function handler(req, res) {
     const role = (body.role || 'student').trim().toLowerCase();
     const purpose = (body.purpose || 'verification').trim().toLowerCase();
     const identifier = (body.identifier || body.email || body.phone || '').trim();
+    const cleanEmail = identifier.toLowerCase();
 
     if (!identifier) {
       return res.status(400).json({ detail: 'Email address or mobile number is required.' });
@@ -50,7 +39,6 @@ export default async function handler(req, res) {
     let errorMsg = null;
 
     if (method === 'email') {
-      const cleanEmail = identifier.toLowerCase();
       if (!cleanEmail.includes('@')) {
         return res.status(400).json({ detail: 'Invalid email address.' });
       }
@@ -115,27 +103,30 @@ export default async function handler(req, res) {
       }
     }
 
-    // 2. Sync to Cloud Firestore so any client/server can verify
+    // 2. Sync to Supabase PostgreSQL so any client/server can verify
     try {
-      const docKey = `${identifier.replace(/[^a-zA-Z0-9_+@-]/g, '_')}_${purpose}`;
-      const firestoreUrl = `${FIRESTORE_BASE}/otp_verifications/${encodeURIComponent(docKey)}`;
-      await fetch(firestoreUrl, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fields: toFirestoreFields({
-            identifier,
-            method,
-            role,
-            otp,
-            purpose,
-            expiresAt,
-            verified: false
-          })
-        })
+      await fetch(`${SUPABASE_URL}/rest/v1/otp_verifications`, {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify([{
+          identifier,
+          purpose,
+          method,
+          role,
+          otp,
+          expires_at: expiresAt,
+          verified: false,
+          attempts: 0
+        }])
       });
+      console.log(`[Supabase] Synced OTP record for ${identifier} (${purpose})`);
     } catch (fsErr) {
-      console.warn('[Vercel Serverless] Firestore OTP sync warning:', fsErr);
+      console.warn('[Supabase] OTP sync warning:', fsErr);
     }
 
     if (method === 'email' && !emailSent) {

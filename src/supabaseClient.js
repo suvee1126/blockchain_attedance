@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = 'https://tqoeraicwsngrepagelv.supabase.co';
-const supabaseAnonKey = 'sb_publishable_YNjsuexBTh4_K0QH7TntqQ_GRq6r1Ni';
+export const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://qheqjumkbqczmygfymwe.supabase.co';
+export const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_hp-QiVaif8bW6GDtWzweyw_O3But7xN';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
