@@ -7,6 +7,7 @@ import os
 from typing import List, Dict, Any, Optional, Tuple
 from .supabase_db import (
     sync_doc_to_supabase as sync_doc_to_firebase,
+    update_doc_in_supabase,
     delete_doc_from_supabase as delete_doc_from_firebase,
     is_supabase_active as is_firebase_active,
     clear_all_supabase_data as clear_all_firebase_data
@@ -934,7 +935,7 @@ def verify_otp_verification(identifier: str, role: str, otp: str, purpose: str =
     conn.commit()
     conn.close()
 
-    sync_doc_to_firebase("otp_verifications", f"{clean_id}_{purpose}", {"verified": True})
+    update_doc_in_supabase("otp_verifications", {"verified": True}, {"identifier": clean_id, "purpose": purpose})
     return True, "Verification successful."
 
 def check_duplicate_account(role: str, email: str = "", phone: str = "") -> Tuple[bool, str]:

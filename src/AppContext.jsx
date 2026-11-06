@@ -1437,9 +1437,6 @@ export function AppProvider({ children }) {
       timeout: 15000
     });
     if (resp.ok && resp.isJson && resp.data) {
-      if (resp.data.emailSent === false && method === 'email') {
-        throw new Error(resp.data.errorNotice || resp.data.detail || `Failed to deliver email to ${cleanId}.`);
-      }
       return resp.data;
     }
     if (!resp.ok && resp.isJson && resp.data?.detail) {

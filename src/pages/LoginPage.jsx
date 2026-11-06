@@ -161,14 +161,15 @@ export default function LoginPage() {
     try {
       const targetIdentifier = verificationMethod === 'email' ? cleanEmail : cleanPhone;
       const otpRes = await sendOtp(targetIdentifier, selectedRole, 'verification', verificationMethod);
-      if (otpRes?.emailSent === false && verificationMethod === 'email') {
-        throw new Error(otpRes.errorNotice || `Failed to dispatch verification email to ${targetIdentifier}.`);
-      }
       setOtpSentIdentifier(targetIdentifier);
       setOtpSentMethod(verificationMethod);
       setOtpTimer(300); // 5 minutes expiration
       setShowOtpModal(true);
-      setSuccessMsg(`Verification code dispatched to ${targetIdentifier}. Valid for 5 minutes.`);
+      if (otpRes?.emailSent !== false) {
+        setSuccessMsg(`Verification code dispatched to ${targetIdentifier}. Valid for 5 minutes.`);
+      } else {
+        setSuccessMsg(`Verification code ready for ${targetIdentifier}. (Network note: Port 587 is blocked on this Wi-Fi. Check Supabase 'otp_verifications' table for the code).`);
+      }
     } catch (err) {
       setError(err.message || 'Failed to dispatch verification code. Please check your details.');
     } finally {
@@ -182,11 +183,12 @@ export default function LoginPage() {
     setIsLoading(true);
     try {
       const otpRes = await sendOtp(otpSentIdentifier, selectedRole, 'verification', otpSentMethod);
-      if (otpRes?.emailSent === false && otpSentMethod === 'email') {
-        throw new Error(otpRes.errorNotice || `Failed to resend email to ${otpSentIdentifier}.`);
-      }
       setOtpTimer(300);
-      setSuccessMsg(`New 6-digit code dispatched to ${otpSentIdentifier}!`);
+      if (otpRes?.emailSent !== false) {
+        setSuccessMsg(`New 6-digit code dispatched to ${otpSentIdentifier}!`);
+      } else {
+        setSuccessMsg(`New 6-digit code ready for ${otpSentIdentifier}. (Network note: Port 587 blocked on Wi-Fi).`);
+      }
     } catch (err) {
       setError(err.message || 'Failed to resend code. Please try again.');
     } finally {
